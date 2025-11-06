@@ -180,15 +180,14 @@ colony-counter/
 
 ## 📞 联系方式
 
-- 项目维护者: [您的姓名]
-- 邮箱: [您的邮箱]
-- 项目主页: [项目地址]
+- 项目维护者: [Zhaohui Cai]
+- 邮箱: [cai_zhaohui@163.com]
 
 ## 🙏 致谢
 
 - OpenCV社区提供的优秀图像处理库
 - Python科学计算生态系统
-- 所有贡献者和用户
+- grok-code-fast-1
 
 ---
 
