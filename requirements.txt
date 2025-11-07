@@ -1,4 +1,5 @@
-opencv-python
-numpy
-Pillow
-pyinstaller
+opencv-python>=4.5.0
+numpy>=1.19.0
+Pillow>=8.0.0
+pyinstaller>=4.0.0
+nuitka>=1.0.0

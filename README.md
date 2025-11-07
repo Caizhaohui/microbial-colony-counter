@@ -42,6 +42,20 @@
    - Windows: 双击 `dist/微生物菌落计数器.exe`
    - macOS/Linux: 运行 `dist/微生物菌落计数器`
 
+### 方法三：优化打包（减小文件大小）
+
+使用虚拟环境 + Nuitka + UPX 的优化方案：
+
+```bash
+python nuitka_build.py
+```
+
+或者使用新的优化脚本（推荐）：
+
+```bash
+python optimize_build.py
+```
+
 ## 📖 使用指南
 
 ### 基本操作流程
@@ -128,6 +142,18 @@ python build.py
 pyinstaller --onefile --windowed --name "微生物菌落计数器" main.py
 ```
 
+### 优化打包（减小文件大小）
+
+使用Nuitka和UPX的优化方案：
+```bash
+python optimize_build.py
+```
+
+该方案通过以下方式减小文件大小：
+1. 使用独立虚拟环境，只安装必要的运行依赖
+2. 使用Nuitka编译替代PyInstaller打包，提高执行效率
+3. 使用UPX压缩进一步减小可执行文件大小
+
 ### 打包选项说明
 
 - `--onefile`: 打包成单个可执行文件
@@ -140,6 +166,8 @@ pyinstaller --onefile --windowed --name "微生物菌落计数器" main.py
 colony-counter/
 ├── main.py              # 主程序文件
 ├── build.py             # 打包脚本
+├── nuitka_build.py      # 优化打包脚本 (旧版)
+├── optimize_build.py    # 优化打包脚本 (推荐)
 ├── requirements.txt     # 依赖列表
 ├── README.md           # 项目说明
 ├── 使用说明.txt         # 生成的使用说明
@@ -151,7 +179,7 @@ colony-counter/
 
 - **GUI框架**: Tkinter
 - **图像处理**: OpenCV + NumPy
-- **打包工具**: PyInstaller
+- **打包工具**: PyInstaller/Nuitka
 - **图像显示**: PIL (Pillow)
 
 ### 核心算法
