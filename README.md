@@ -16,6 +16,7 @@
 - 📊 **实时显示**：处理过程中实时显示二值化和计数结果
 - 💾 **结果保存**：可保存包含原始图片、二值化图片和计数结果的统计报告
 - 🎨 **美观界面**：精心设计的用户界面，操作直观简单
+- 📱 **Web App 支持**：支持通过手机浏览器远程访问，方便在实验室移动使用
 
 ## 🚀 快速开始
 
@@ -31,7 +32,18 @@
    python main.py
    ```
 
-### 方法二：使用打包的可执行文件（推荐）
+### 方法二：使用 Web App GUI 启动器（推荐）
+
+1. **运行启动器**
+   - Windows: 双击 `run_gui.bat`
+   - 或者运行: `python web_launcher.py`
+
+2. **操作说明**
+   - 点击界面上的 "启动服务" 按钮。
+   - 看到 "本机访问" 和 "手机访问" 地址。
+   - 手机和电脑在同一局域网时，手机扫描或输入地址即可使用。
+
+### 方法三：使用打包的可执行文件
 
 1. **打包程序**
    ```bash
@@ -42,15 +54,9 @@
    - Windows: 双击 `dist/微生物菌落计数器.exe`
    - macOS/Linux: 运行 `dist/微生物菌落计数器`
 
-### 方法三：优化打包（减小文件大小）
+### 方法四：优化打包（减小文件大小）
 
 使用虚拟环境 + Nuitka + UPX 的优化方案：
-
-```bash
-python nuitka_build.py
-```
-
-或者使用新的优化脚本（推荐）：
 
 ```bash
 python optimize_build.py
@@ -106,101 +112,39 @@ python optimize_build.py
 opencv-python>=4.5.0
 numpy>=1.19.0
 Pillow>=8.0.0
-pyinstaller>=4.0.0  # 仅打包时需要
+fastapi>=0.68.0
+uvicorn>=0.15.0
+psutil>=5.8.0
 ```
 
 ### 安装开发环境
 
 ```bash
 # 克隆项目
-git clone <repository-url>
-cd colony-counter
-
-# 创建虚拟环境（推荐）
-python -m venv venv
-source venv/bin/activate  # Linux/macOS
-# 或
-venv\Scripts\activate     # Windows
+git clone https://github.com/Caizhaohui/microbial-colony-counter.git
+cd microbial-colony-counter
 
 # 安装依赖
 pip install -r requirements.txt
 ```
 
-## 📦 项目打包
-
-### 自动打包
-
-运行打包脚本：
-```bash
-python build.py
-```
-
-### 手动打包
-
-使用PyInstaller：
-```bash
-pyinstaller --onefile --windowed --name "微生物菌落计数器" main.py
-```
-
-### 优化打包（减小文件大小）
-
-使用Nuitka和UPX的优化方案：
-```bash
-python optimize_build.py
-```
-
-该方案通过以下方式减小文件大小：
-1. 使用独立虚拟环境，只安装必要的运行依赖
-2. 使用Nuitka编译替代PyInstaller打包，提高执行效率
-3. 使用UPX压缩进一步减小可执行文件大小
-
-### 打包选项说明
-
-- `--onefile`: 打包成单个可执行文件
-- `--windowed`: 隐藏控制台窗口（GUI应用）
-- `--name`: 指定可执行文件名称
-
 ## 🏗️ 项目结构
 
 ```
-colony-counter/
-├── main.py              # 主程序文件
-├── build.py             # 打包脚本
-├── nuitka_build.py      # 优化打包脚本 (旧版)
-├── optimize_build.py    # 优化打包脚本 (推荐)
-├── requirements.txt     # 依赖列表
-├── README.md           # 项目说明
-├── 使用说明.txt         # 生成的使用说明
-└── dist/               # 打包输出目录
-    └── 微生物菌落计数器.exe  # 可执行文件
+microbial-colony-counter/
+├── backend/            # Web App 后端代码 (FastAPI)
+│   ├── core/           # 核心算法
+│   └── static/         # 前端静态文件 (HTML/JS/CSS)
+├── web_launcher.py     # Web App GUI 启动器 (Tkinter)
+├── main.py             # 原始桌面版主程序
+├── run_gui.bat         # 一键启动脚本
+├── requirements.txt    # 依赖列表
+└── README.md           # 项目说明
 ```
-
-## 🔧 技术实现
-
-- **GUI框架**: Tkinter
-- **图像处理**: OpenCV + NumPy
-- **打包工具**: PyInstaller/Nuitka
-- **图像显示**: PIL (Pillow)
-
-### 核心算法
-
-1. **图像预处理**: 高斯模糊去噪
-2. **二值化**: 手动/自适应阈值分割
-3. **形态学处理**: 轮廓检测和过滤
-4. **几何分析**: 面积和位置过滤
-5. **结果可视化**: 轮廓标记和编号
 
 ## 🤝 贡献指南
 
 欢迎提交Issue和Pull Request！
-
-### 开发流程
-
-1. Fork本项目
-2. 创建特性分支: `git checkout -b feature/AmazingFeature`
-3. 提交更改: `git commit -m 'Add some AmazingFeature'`
-4. 推送分支: `git push origin feature/AmazingFeature`
-5. 创建Pull Request
 
 ## 📄 许可证
 
@@ -211,12 +155,5 @@ colony-counter/
 - 项目维护者: [Zhaohui Cai]
 - 邮箱: [cai_zhaohui@163.com]
 
-## 🙏 致谢
-
-- OpenCV社区提供的优秀图像处理库
-- Python科学计算生态系统
-- grok-code-fast-1
-
 ---
-
 **享受使用微生物菌落计数器！** 🧫🔬

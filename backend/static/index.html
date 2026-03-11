@@ -1,0 +1,1053 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>微生物菌落计数器 - 移动版</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: #f5f5f7;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 600px;
+            background: white;
+            border-radius: 20px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #1a73e8;
+            margin-bottom: 20px;
+            font-size: 1.5rem;
+        }
+        .upload-section {
+            border: 2px dashed #ddd;
+            border-radius: 12px;
+            padding: 40px 20px;
+            text-align: center;
+            cursor: pointer;
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+        }
+        .upload-section:hover {
+            border-color: #1a73e8;
+            background-color: #f8f9fa;
+        }
+        .upload-icon {
+            font-size: 48px;
+            color: #1a73e8;
+            margin-bottom: 10px;
+        }
+        .upload-text {
+            color: #666;
+            font-size: 14px;
+        }
+        #fileInput {
+            display: none;
+        }
+        .preview-container {
+            position: relative;
+            margin-bottom: 10px;
+            display: none;
+        }
+        .preview-image {
+            max-width: 100%;
+            border-radius: 8px;
+            display: block;
+        }
+        .canvas-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            cursor: crosshair;
+            border-radius: 8px;
+        }
+        .controls {
+            margin-bottom: 20px;
+        }
+        .control-group {
+            margin-bottom: 15px;
+        }
+        .control-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        .slider-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .slider-row input[type="range"] {
+            flex: 1;
+        }
+        .slider-value {
+            min-width: 38px;
+            text-align: right;
+            font-size: 13px;
+            color: #555;
+        }
+        .control-label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+        .btn {
+            width: 100%;
+            padding: 12px;
+            background-color: #1a73e8;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .btn-outline {
+            background-color: transparent;
+            color: #1a73e8;
+            border: 1px solid #1a73e8;
+        }
+        .btn-outline:hover {
+            background-color: #f1f8ff;
+        }
+        .btn:disabled {
+            background-color: #ccc;
+            border-color: #ccc;
+            color: white;
+        }
+        .btn:active {
+            background-color: #1557b0;
+        }
+        .roi-toolbar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .roi-btn {
+            flex: 1;
+            padding: 8px;
+            font-size: 14px;
+            border-radius: 6px;
+            border: 1px solid #ddd;
+            background: #fff;
+            cursor: pointer;
+        }
+        .roi-btn.active {
+            background: #e8f0fe;
+            color: #1a73e8;
+            border-color: #1a73e8;
+        }
+        .roi-adjust-panel {
+            margin-bottom: 12px;
+            display: none;
+        }
+        .roi-adjust-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .roi-adjust-btn {
+            flex: 1;
+            padding: 8px;
+            border-radius: 6px;
+            border: 1px solid #ddd;
+            background: #fff;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .roi-adjust-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 6px;
+        }
+        .roi-adjust-grid .roi-adjust-btn {
+            padding: 10px 8px;
+        }
+        .result-section {
+            margin-top: 20px;
+            border-top: 1px solid #eee;
+            padding-top: 20px;
+            display: none;
+        }
+        .result-card {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+        }
+        .result-item {
+            text-align: center;
+        }
+        .count-display {
+            font-size: 24px;
+            font-weight: bold;
+            color: #1a73e8;
+            margin: 5px 0;
+        }
+        .processed-image-container {
+            position: relative;
+            overflow: hidden;
+            border-radius: 8px;
+            margin-top: 10px;
+            touch-action: none; /* 防止默认滚动 */
+        }
+        .processed-image {
+            width: 100%;
+            display: block;
+            transition: transform 0.2s;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
+        }
+        .status-tip {
+            margin-top: 8px;
+            color: #666;
+            font-size: 13px;
+            text-align: center;
+            min-height: 18px;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #1a73e8;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* Switch */
+        .switch-container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 24px;
+        }
+        .switch input { 
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 24px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 16px;
+            width: 16px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        input:checked + .slider {
+            background-color: #1a73e8;
+        }
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+        
+        /* Modal for Image Zoom */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            padding-top: 50px;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.9);
+        }
+        .modal-content {
+            margin: auto;
+            display: block;
+            width: 80%;
+            max-width: 700px;
+        }
+        .close {
+            position: absolute;
+            top: 15px;
+            right: 35px;
+            color: #f1f1f1;
+            font-size: 40px;
+            font-weight: bold;
+            transition: 0.3s;
+        }
+        .close:hover,
+        .close:focus {
+            color: #bbb;
+            text-decoration: none;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🦠 菌落计数器</h1>
+        
+        <div class="upload-section" onclick="document.getElementById('fileInput').click()">
+            <div class="upload-icon">📷</div>
+            <div class="upload-text">点击拍摄或选择图片</div>
+            <input type="file" id="fileInput" accept="image/*" onchange="handleFileSelect(event)">
+        </div>
+
+        <div id="previewContainer" class="preview-container">
+            <img id="preview" class="preview-image">
+            <canvas id="roiCanvas" class="canvas-overlay"></canvas>
+        </div>
+
+        <div class="controls" id="controlsSection" style="display: none;">
+            <div class="roi-toolbar">
+                <button class="roi-btn active" id="roiNone" onclick="setRoiMode('none')">全图</button>
+                <button class="roi-btn" id="roiRect" onclick="setRoiMode('rectangle')">矩形选区</button>
+                <button class="roi-btn" id="roiCircle" onclick="setRoiMode('circle')">圆形选区</button>
+            </div>
+            <div class="roi-adjust-panel" id="roiAdjustPanel">
+                <div class="roi-adjust-row">
+                    <button class="roi-adjust-btn" onclick="scaleRoi(0.96)">缩小</button>
+                    <button class="roi-adjust-btn" onclick="scaleRoi(1.04)">放大</button>
+                </div>
+                <div class="roi-adjust-grid">
+                    <div></div>
+                    <button class="roi-adjust-btn" onclick="nudgeRoi(0,-4)">↑</button>
+                    <div></div>
+                    <button class="roi-adjust-btn" onclick="nudgeRoi(-4,0)">←</button>
+                    <button class="roi-adjust-btn" onclick="nudgeRoi(0,0)">中心</button>
+                    <button class="roi-adjust-btn" onclick="nudgeRoi(4,0)">→</button>
+                    <div></div>
+                    <button class="roi-adjust-btn" onclick="nudgeRoi(0,4)">↓</button>
+                    <div></div>
+                </div>
+            </div>
+            
+            <div class="control-group switch-container">
+                <span class="control-label">自动检测培养皿</span>
+                <label class="switch">
+                    <input type="checkbox" id="detectPetri" checked>
+                    <span class="slider"></span>
+                </label>
+            </div>
+            
+            <div class="control-group">
+                <span class="control-label">二值化方法</span>
+                <select id="threshMethod" style="width: 100%; padding: 8px; border-radius: 6px;">
+                    <option value="adaptive">自适应阈值 (默认)</option>
+                    <option value="manual">手动阈值</option>
+                </select>
+            </div>
+            <div class="control-group" id="manualGroup" style="display:none;">
+                <span class="control-label">手动阈值</span>
+                <div class="slider-row">
+                    <input type="range" id="threshVal" min="0" max="255" step="1" value="100">
+                    <span class="slider-value" id="threshValOut">100</span>
+                </div>
+            </div>
+            <div class="control-grid" id="adaptiveGroup">
+                <div class="control-group" style="margin-bottom: 0;">
+                    <span class="control-label">自适应块大小</span>
+                    <div class="slider-row">
+                        <input type="range" id="adaptiveBlockSize" min="3" max="31" step="2" value="11">
+                        <span class="slider-value" id="adaptiveBlockSizeOut">11</span>
+                    </div>
+                </div>
+                <div class="control-group" style="margin-bottom: 0;">
+                    <span class="control-label">自适应 C</span>
+                    <div class="slider-row">
+                        <input type="range" id="adaptiveC" min="-5" max="5" step="1" value="2">
+                        <span class="slider-value" id="adaptiveCOut">2</span>
+                    </div>
+                </div>
+            </div>
+            <div class="control-grid" style="margin-top:10px;">
+                <div class="control-group" style="margin-bottom: 0;">
+                    <span class="control-label">高斯模糊核</span>
+                    <div class="slider-row">
+                        <input type="range" id="blurKsize" min="3" max="15" step="2" value="7">
+                        <span class="slider-value" id="blurKsizeOut">7</span>
+                    </div>
+                </div>
+                <div class="control-group" style="margin-bottom: 0;">
+                    <span class="control-label">最小边缘距离</span>
+                    <div class="slider-row">
+                        <input type="range" id="minDistanceFromEdge" min="0" max="200" step="1" value="20">
+                        <span class="slider-value" id="minDistanceFromEdgeOut">20</span>
+                    </div>
+                </div>
+            </div>
+            <div class="control-grid" style="margin-top:10px;">
+                <div class="control-group" style="margin-bottom: 0;">
+                    <span class="control-label">最小面积</span>
+                    <div class="slider-row">
+                        <input type="range" id="minArea" min="10" max="1000" step="10" value="50">
+                        <span class="slider-value" id="minAreaOut">50</span>
+                    </div>
+                </div>
+                <div class="control-group" style="margin-bottom: 0;">
+                    <span class="control-label">最大面积</span>
+                    <div class="slider-row">
+                        <input type="range" id="maxArea" min="1000" max="50000" step="100" value="5000">
+                        <span class="slider-value" id="maxAreaOut">5000</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <button id="processBtn" class="btn" onclick="processImage()" disabled>开始计数</button>
+        <div id="statusTip" class="status-tip"></div>
+
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <div>正在分析中...</div>
+        </div>
+
+        <div id="result" class="result-section">
+            <div class="result-card">
+                <div class="result-item">
+                    <div style="color: #666; font-size: 14px;">菌落总数</div>
+                    <div class="count-display" id="countValue">0</div>
+                </div>
+                <div class="result-item">
+                    <div style="color: #666; font-size: 14px;">耗时</div>
+                    <div style="font-size: 18px; font-weight: 500; color: #333; margin: 5px 0;" id="timeValue">0ms</div>
+                </div>
+            </div>
+            
+            <div style="text-align: center; margin-bottom: 10px; font-weight: 500;">处理结果预览 (点击查看大图)</div>
+            <div class="processed-image-container" onclick="openModal()">
+                <img id="processedImage" class="processed-image">
+            </div>
+            <div style="text-align: center; margin: 12px 0 8px; font-weight: 500; color:#666;">二值图预览</div>
+            <div class="processed-image-container">
+                <img id="binaryImage" class="processed-image">
+            </div>
+            
+            <button class="btn" style="margin-top: 15px; background-color: #34a853;" onclick="reset()">拍摄下一张</button>
+            <button class="btn" style="margin-top: 10px; background-color: #1a73e8;" onclick="downloadResult()">保存图片</button>
+        </div>
+
+        <!-- The Modal -->
+        <div id="myModal" class="modal">
+            <span class="close" onclick="closeModal()">&times;</span>
+            <img class="modal-content" id="img01">
+        </div>
+
+        <div class="history-section">
+            <h3 style="margin-top: 30px; margin-bottom: 15px; color: #666; font-size: 16px;">历史记录</h3>
+            <div id="historyList"></div>
+            <button class="btn" style="margin-top: 10px; background-color: #f44336; font-size: 14px; padding: 8px;" onclick="clearHistory()">清空历史</button>
+        </div>
+    </div>
+
+    <script>
+        let selectedFile = null;
+        let currentResult = null;
+        
+        // ROI 相关变量
+        let roiMode = 'none'; // 'none', 'rectangle', 'circle'
+        let roiStart = null;
+        let roiEnd = null;
+        let roiShape = null;
+        let interactionMode = null;
+        let dragOffset = null;
+        let canvas, ctx;
+        let imgElement;
+
+        // 初始化加载历史记录
+        loadHistory();
+        bindParamControls();
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file) {
+                selectedFile = file;
+                setStatus(`已选择图片：${file.name}`);
+                document.querySelector('.upload-section').style.display = 'none';
+                document.getElementById('previewContainer').style.display = 'block';
+                document.getElementById('controlsSection').style.display = 'block';
+                const processBtn = document.getElementById('processBtn');
+                processBtn.disabled = false;
+                processBtn.textContent = '开始计数';
+                document.getElementById('result').style.display = 'none';
+
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    imgElement = document.getElementById('preview');
+                    imgElement.onload = function() {
+                        // 初始化Canvas
+                        initCanvas();
+                        setStatus('可直接点击“开始计数”');
+                    };
+                    imgElement.onerror = function() {
+                        setStatus('图片预览失败，但仍可点击“开始计数”上传处理');
+                    };
+                    imgElement.src = e.target.result;
+                }
+                reader.readAsDataURL(file);
+            }
+        }
+
+        function initCanvas() {
+            canvas = document.getElementById('roiCanvas');
+            ctx = canvas.getContext('2d');
+            
+            // 设置Canvas大小与图片一致
+            canvas.width = imgElement.width;
+            canvas.height = imgElement.height;
+            
+            // 绑定事件
+            canvas.addEventListener('mousedown', onMouseDown);
+            canvas.addEventListener('mousemove', onMouseMove);
+            canvas.addEventListener('mouseup', onMouseUp);
+            
+            // 触摸事件支持
+            canvas.addEventListener('touchstart', onTouchStart, {passive: false});
+            canvas.addEventListener('touchmove', onTouchMove, {passive: false});
+            canvas.addEventListener('touchend', onTouchEnd);
+        }
+
+        function setRoiMode(mode) {
+            roiMode = mode;
+            document.querySelectorAll('.roi-btn').forEach(btn => btn.classList.remove('active'));
+            if(mode === 'none') document.getElementById('roiNone').classList.add('active');
+            if(mode === 'rectangle') document.getElementById('roiRect').classList.add('active');
+            if(mode === 'circle') document.getElementById('roiCircle').classList.add('active');
+            roiStart = null;
+            roiEnd = null;
+            roiShape = null;
+            interactionMode = null;
+            dragOffset = null;
+            clearCanvas();
+            setRoiAdjustVisible(mode !== 'none');
+            if (mode !== 'none') {
+                document.getElementById('detectPetri').checked = false;
+            }
+        }
+
+        function getPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            
+            let clientX, clientY;
+            if (e.touches && e.touches.length > 0) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+            
+            return {
+                x: (clientX - rect.left) * scaleX,
+                y: (clientY - rect.top) * scaleY
+            };
+        }
+
+        function onMouseDown(e) {
+            if (roiMode === 'none') return;
+            const pos = getPos(e);
+            if (roiShape && isPointInRoi(pos)) {
+                interactionMode = 'move';
+                if (roiShape.type === 'rectangle') {
+                    dragOffset = { x: pos.x - roiShape.x, y: pos.y - roiShape.y };
+                } else {
+                    dragOffset = { x: pos.x - roiShape.cx, y: pos.y - roiShape.cy };
+                }
+            } else {
+                interactionMode = 'draw';
+                roiStart = pos;
+                roiEnd = pos;
+                roiShape = null;
+            }
+            drawRoi();
+        }
+
+        function onMouseMove(e) {
+            if (roiMode === 'none' || !interactionMode) return;
+            e.preventDefault(); // 防止滚动
+            const pos = getPos(e);
+            if (interactionMode === 'draw') {
+                roiEnd = pos;
+                updateRoiShapeFromPoints();
+            } else if (interactionMode === 'move' && roiShape) {
+                moveRoiByPointer(pos);
+            }
+            drawRoi();
+        }
+
+        function onMouseUp(e) {
+            if (roiMode === 'none' || !interactionMode) return;
+            const pos = getPos(e);
+            if (interactionMode === 'draw') {
+                roiEnd = pos;
+                updateRoiShapeFromPoints();
+            } else if (interactionMode === 'move' && roiShape) {
+                moveRoiByPointer(pos);
+            }
+            interactionMode = null;
+            dragOffset = null;
+            drawRoi();
+        }
+        
+        function onTouchStart(e) {
+            if (roiMode === 'none') return;
+            e.preventDefault();
+            const pos = getPos(e);
+            if (roiShape && isPointInRoi(pos)) {
+                interactionMode = 'move';
+                if (roiShape.type === 'rectangle') {
+                    dragOffset = { x: pos.x - roiShape.x, y: pos.y - roiShape.y };
+                } else {
+                    dragOffset = { x: pos.x - roiShape.cx, y: pos.y - roiShape.cy };
+                }
+            } else {
+                interactionMode = 'draw';
+                roiStart = pos;
+                roiEnd = pos;
+                roiShape = null;
+            }
+            drawRoi();
+        }
+        
+        function onTouchMove(e) {
+            if (roiMode === 'none' || !interactionMode) return;
+            e.preventDefault();
+            const pos = getPos(e);
+            if (interactionMode === 'draw') {
+                roiEnd = pos;
+                updateRoiShapeFromPoints();
+            } else if (interactionMode === 'move' && roiShape) {
+                moveRoiByPointer(pos);
+            }
+            drawRoi();
+        }
+        
+        function onTouchEnd(e) {
+            interactionMode = null;
+            dragOffset = null;
+        }
+
+        function clearCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        function drawRoi() {
+            clearCanvas();
+            if (!roiShape) return;
+            ctx.strokeStyle = '#00FF00';
+            ctx.lineWidth = 3;
+            if (roiShape.type === 'rectangle') {
+                ctx.strokeRect(roiShape.x, roiShape.y, roiShape.w, roiShape.h);
+            } else if (roiShape.type === 'circle') {
+                ctx.beginPath();
+                ctx.arc(roiShape.cx, roiShape.cy, roiShape.r, 0, 2 * Math.PI);
+                ctx.stroke();
+            }
+        }
+
+        function updateRoiShapeFromPoints() {
+            if (!roiStart || !roiEnd || roiMode === 'none') return;
+            if (roiMode === 'rectangle') {
+                roiShape = {
+                    type: 'rectangle',
+                    x: Math.min(roiStart.x, roiEnd.x),
+                    y: Math.min(roiStart.y, roiEnd.y),
+                    w: Math.abs(roiEnd.x - roiStart.x),
+                    h: Math.abs(roiEnd.y - roiStart.y)
+                };
+            } else if (roiMode === 'circle') {
+                const r = Math.sqrt(Math.pow(roiEnd.x - roiStart.x, 2) + Math.pow(roiEnd.y - roiStart.y, 2));
+                roiShape = {
+                    type: 'circle',
+                    cx: roiStart.x,
+                    cy: roiStart.y,
+                    r: r
+                };
+            }
+            clampRoiShape();
+        }
+
+        function isPointInRoi(pos) {
+            if (!roiShape) return false;
+            if (roiShape.type === 'rectangle') {
+                return pos.x >= roiShape.x && pos.x <= roiShape.x + roiShape.w &&
+                       pos.y >= roiShape.y && pos.y <= roiShape.y + roiShape.h;
+            }
+            const dx = pos.x - roiShape.cx;
+            const dy = pos.y - roiShape.cy;
+            return (dx * dx + dy * dy) <= (roiShape.r * roiShape.r);
+        }
+
+        function moveRoiByPointer(pos) {
+            if (!roiShape || !dragOffset) return;
+            if (roiShape.type === 'rectangle') {
+                roiShape.x = pos.x - dragOffset.x;
+                roiShape.y = pos.y - dragOffset.y;
+            } else {
+                roiShape.cx = pos.x - dragOffset.x;
+                roiShape.cy = pos.y - dragOffset.y;
+            }
+            clampRoiShape();
+        }
+
+        function nudgeRoi(dx, dy) {
+            if (!roiShape) return;
+            if (dx === 0 && dy === 0) return;
+            if (roiShape.type === 'rectangle') {
+                roiShape.x += dx;
+                roiShape.y += dy;
+            } else {
+                roiShape.cx += dx;
+                roiShape.cy += dy;
+            }
+            clampRoiShape();
+            drawRoi();
+        }
+
+        function scaleRoi(factor) {
+            if (!roiShape) return;
+            if (roiShape.type === 'rectangle') {
+                const cx = roiShape.x + roiShape.w / 2;
+                const cy = roiShape.y + roiShape.h / 2;
+                roiShape.w = Math.max(12, roiShape.w * factor);
+                roiShape.h = Math.max(12, roiShape.h * factor);
+                roiShape.x = cx - roiShape.w / 2;
+                roiShape.y = cy - roiShape.h / 2;
+            } else {
+                roiShape.r = Math.max(8, roiShape.r * factor);
+            }
+            clampRoiShape();
+            drawRoi();
+        }
+
+        function clampRoiShape() {
+            if (!roiShape || !canvas) return;
+            const cw = canvas.width;
+            const ch = canvas.height;
+            if (roiShape.type === 'rectangle') {
+                roiShape.w = Math.min(roiShape.w, cw);
+                roiShape.h = Math.min(roiShape.h, ch);
+                roiShape.x = Math.max(0, Math.min(roiShape.x, cw - roiShape.w));
+                roiShape.y = Math.max(0, Math.min(roiShape.y, ch - roiShape.h));
+            } else {
+                const maxR = Math.max(8, Math.min(cw, ch) / 2);
+                roiShape.r = Math.min(Math.max(roiShape.r, 8), maxR);
+                roiShape.cx = Math.max(roiShape.r, Math.min(roiShape.cx, cw - roiShape.r));
+                roiShape.cy = Math.max(roiShape.r, Math.min(roiShape.cy, ch - roiShape.r));
+            }
+        }
+
+        function setRoiAdjustVisible(visible) {
+            const panel = document.getElementById('roiAdjustPanel');
+            if (panel) panel.style.display = visible ? 'block' : 'none';
+        }
+
+        async function processImage() {
+            if (!selectedFile) {
+                alert('请先选择一张图片');
+                setStatus('请先选择图片');
+                return;
+            }
+
+            // UI Update
+            const processBtn = document.getElementById('processBtn');
+            processBtn.disabled = true;
+            processBtn.textContent = '计数中...';
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('result').style.display = 'none';
+            setStatus('正在上传并处理，请稍候...');
+
+            const formData = new FormData();
+            formData.append('image', selectedFile);
+            formData.append('detect_petri_dish', document.getElementById('detectPetri').checked);
+            formData.append('thresh_method', document.getElementById('threshMethod').value);
+            formData.append('thresh_val', document.getElementById('threshVal').value);
+            formData.append('adaptive_block_size', document.getElementById('adaptiveBlockSize').value);
+            formData.append('adaptive_c', document.getElementById('adaptiveC').value);
+            formData.append('min_area', document.getElementById('minArea').value);
+            formData.append('max_area', document.getElementById('maxArea').value);
+            formData.append('blur_ksize', document.getElementById('blurKsize').value);
+            formData.append('min_distance_from_edge', document.getElementById('minDistanceFromEdge').value);
+            
+            // 添加ROI数据
+            if (roiMode !== 'none' && roiShape) {
+                const width = imgElement.naturalWidth;
+                const height = imgElement.naturalHeight;
+                const displayW = canvas.width;
+                const displayH = canvas.height;
+                const scaleX = width / displayW;
+                const scaleY = height / displayH;
+                formData.append('roi_type', roiMode);
+
+                if (roiShape.type === 'rectangle') {
+                    const x = roiShape.x * scaleX;
+                    const y = roiShape.y * scaleY;
+                    const w = roiShape.w * scaleX;
+                    const h = roiShape.h * scaleY;
+                    formData.append('roi_data', `${Math.round(x)},${Math.round(y)},${Math.round(w)},${Math.round(h)}`);
+                } else if (roiShape.type === 'circle') {
+                    const cx = roiShape.cx * scaleX;
+                    const cy = roiShape.cy * scaleY;
+                    const r = roiShape.r * ((scaleX + scaleY) / 2);
+                    formData.append('roi_data', `${Math.round(cx)},${Math.round(cy)},${Math.round(r)}`);
+                }
+            }
+
+            try {
+                const response = await fetch('/api/v1/count', {
+                    method: 'POST',
+                    body: formData
+                });
+
+
+                if (response.ok) {
+                    const data = await response.json();
+                    currentResult = data;
+                    showResult(data);
+                    saveToHistory(data);
+                    setStatus('处理完成');
+                    processBtn.textContent = '重新计数';
+                } else {
+                    let detailText = response.statusText;
+                    try {
+                        const errJson = await response.json();
+                        detailText = errJson.detail || JSON.stringify(errJson);
+                    } catch (_) {}
+                    alert('处理失败: ' + detailText);
+                    setStatus('处理失败，请重试');
+                    processBtn.textContent = '开始计数';
+                    resetUI();
+                }
+            } catch (error) {
+                alert('网络错误: ' + error.message);
+                setStatus('网络错误，请检查手机与电脑是否同一网络');
+                processBtn.textContent = '开始计数';
+                resetUI();
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+                processBtn.disabled = false;
+            }
+        }
+
+        function showResult(data) {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('result').style.display = 'block';
+            
+            document.getElementById('countValue').textContent = data.count;
+            document.getElementById('timeValue').textContent = `${data.processing_ms.toFixed(0)}ms`;
+            
+            if (data.processed_image_base64) {
+                document.getElementById('processedImage').src = 'data:image/jpeg;base64,' + data.processed_image_base64;
+            }
+            if (data.binary_image_base64) {
+                document.getElementById('binaryImage').src = 'data:image/jpeg;base64,' + data.binary_image_base64;
+            }
+        }
+        
+        function openModal() {
+            if (!currentResult || !currentResult.processed_image_base64) return;
+            const modal = document.getElementById("myModal");
+            const modalImg = document.getElementById("img01");
+            modal.style.display = "block";
+            modalImg.src = 'data:image/jpeg;base64,' + currentResult.processed_image_base64;
+        }
+
+        function closeModal() {
+            document.getElementById("myModal").style.display = "none";
+        }
+        
+        // 点击模态框外部关闭
+        window.onclick = function(event) {
+            const modal = document.getElementById("myModal");
+            if (event.target == modal) {
+                modal.style.display = "none";
+            }
+        }
+
+        function saveToHistory(data) {
+            const history = JSON.parse(localStorage.getItem('colonyHistory') || '[]');
+            const newItem = {
+                id: Date.now(),
+                count: data.count,
+                date: new Date().toLocaleString(),
+                thumbnail: data.processed_image_base64 // 注意：这里存base64可能会让localStorage爆满，实际生产建议存URL或只存数据
+            };
+            // 只保留最近10条，且为了避免localStorage溢出，这里暂不存图片，只存数据
+            // 如果想存缩略图，建议在后端生成缩略图URL
+            delete newItem.thumbnail; 
+            
+            history.unshift(newItem);
+            if (history.length > 20) history.pop();
+            localStorage.setItem('colonyHistory', JSON.stringify(history));
+            loadHistory();
+        }
+
+        function loadHistory() {
+            const history = JSON.parse(localStorage.getItem('colonyHistory') || '[]');
+            const container = document.getElementById('historyList');
+            container.innerHTML = '';
+            
+            if (history.length === 0) {
+                container.innerHTML = '<div style="text-align:center; color:#999; font-size:14px; padding:10px;">暂无记录</div>';
+                return;
+            }
+
+            history.forEach(item => {
+                const div = document.createElement('div');
+                div.style.cssText = 'background:white; padding:10px; margin-bottom:10px; border-radius:8px; display:flex; justify-content:space-between; align-items:center; border:1px solid #eee;';
+                div.innerHTML = `
+                    <div>
+                        <div style="font-weight:bold; color:#1a73e8;">计数: ${item.count}</div>
+                        <div style="font-size:12px; color:#999;">${item.date}</div>
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        function clearHistory() {
+            if(confirm('确定清空所有历史记录吗？')) {
+                localStorage.removeItem('colonyHistory');
+                loadHistory();
+            }
+        }
+
+        function downloadResult() {
+            if (!currentResult || !currentResult.processed_image_base64) return;
+            
+            const link = document.createElement('a');
+            link.href = 'data:image/jpeg;base64,' + currentResult.processed_image_base64;
+            link.download = `colony_count_${currentResult.count}_${Date.now()}.jpg`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        function reset() {
+            selectedFile = null;
+            currentResult = null;
+            roiStart = null;
+            roiEnd = null;
+            roiShape = null;
+            interactionMode = null;
+            dragOffset = null;
+            document.getElementById('fileInput').value = '';
+            document.getElementById('preview').src = '';
+            document.getElementById('previewContainer').style.display = 'none';
+            document.getElementById('controlsSection').style.display = 'none';
+            document.querySelector('.upload-section').style.display = 'block';
+            document.getElementById('processBtn').disabled = true;
+            document.getElementById('processBtn').textContent = '开始计数';
+            document.getElementById('result').style.display = 'none';
+            document.getElementById('loading').style.display = 'none';
+            setRoiAdjustVisible(false);
+            setStatus('');
+        }
+
+        function resetUI() {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('processBtn').disabled = false;
+        }
+
+        function setStatus(text) {
+            const el = document.getElementById('statusTip');
+            if (el) {
+                el.textContent = text || '';
+            }
+        }
+
+        function bindParamControls() {
+            bindSliderOutput('threshVal', 'threshValOut');
+            bindSliderOutput('adaptiveBlockSize', 'adaptiveBlockSizeOut');
+            bindSliderOutput('adaptiveC', 'adaptiveCOut');
+            bindSliderOutput('blurKsize', 'blurKsizeOut');
+            bindSliderOutput('minDistanceFromEdge', 'minDistanceFromEdgeOut');
+            bindSliderOutput('minArea', 'minAreaOut');
+            bindSliderOutput('maxArea', 'maxAreaOut');
+            const methodEl = document.getElementById('threshMethod');
+            if (methodEl) {
+                methodEl.addEventListener('change', syncThreshMethodUI);
+                methodEl.addEventListener('change', onParamsChanged);
+            }
+            bindParamChangeTip('threshVal');
+            bindParamChangeTip('adaptiveBlockSize');
+            bindParamChangeTip('adaptiveC');
+            bindParamChangeTip('blurKsize');
+            bindParamChangeTip('minDistanceFromEdge');
+            bindParamChangeTip('minArea');
+            bindParamChangeTip('maxArea');
+            bindParamChangeTip('detectPetri');
+            syncThreshMethodUI();
+        }
+
+        function bindSliderOutput(sliderId, outputId) {
+            const slider = document.getElementById(sliderId);
+            const output = document.getElementById(outputId);
+            if (!slider || !output) return;
+            const update = () => { output.textContent = slider.value; };
+            slider.addEventListener('input', update);
+            update();
+        }
+
+        function syncThreshMethodUI() {
+            const method = document.getElementById('threshMethod').value;
+            const manualGroup = document.getElementById('manualGroup');
+            const adaptiveGroup = document.getElementById('adaptiveGroup');
+            if (manualGroup) manualGroup.style.display = method === 'manual' ? 'block' : 'none';
+            if (adaptiveGroup) adaptiveGroup.style.display = method === 'adaptive' ? 'grid' : 'none';
+        }
+
+        function bindParamChangeTip(id) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const evt = el.type === 'range' ? 'input' : 'change';
+            el.addEventListener(evt, onParamsChanged);
+        }
+
+        function onParamsChanged() {
+            if (!selectedFile) return;
+            document.getElementById('processBtn').disabled = false;
+            document.getElementById('processBtn').textContent = '重新计数';
+            setStatus('参数已更新，可直接重新计数');
+        }
+    </script>
+</body>
+</html>

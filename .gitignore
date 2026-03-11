@@ -2,3 +2,4 @@ build/
 dist/
 微生物菌落计数器.spec
 __pycache__/
+*.log
