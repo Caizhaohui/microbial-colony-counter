@@ -210,6 +210,8 @@
             width: 100%;
             display: block;
             transition: transform 0.2s;
+            will-change: transform;
+            content-visibility: auto;
         }
         .loading {
             display: none;
@@ -237,6 +239,82 @@
             100% { transform: rotate(360deg); }
         }
         
+        /* Advanced Options */
+        .advanced-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            padding: 10px 0;
+            border-top: 1px solid #eee;
+            margin-top: 10px;
+        }
+        .advanced-toggle-label {
+            font-weight: 500;
+            color: #555;
+        }
+        .advanced-toggle-arrow {
+            transition: transform 0.2s;
+            color: #999;
+        }
+        .advanced-toggle-arrow.open {
+            transform: rotate(90deg);
+        }
+        .advanced-panel {
+            display: none;
+            padding-top: 10px;
+        }
+        .advanced-panel.open {
+            display: block;
+        }
+        .warning-text {
+            font-size: 12px;
+            color: #888;
+            margin-top: 4px;
+        }
+
+        /* Colony Details Table */
+        .colony-details-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            margin-top: 10px;
+        }
+        .colony-details-table th {
+            background: #f0f4f8;
+            padding: 8px 6px;
+            text-align: center;
+            border-bottom: 2px solid #ddd;
+            color: #555;
+        }
+        .colony-details-table td {
+            padding: 6px;
+            text-align: center;
+            border-bottom: 1px solid #eee;
+        }
+        .colony-details-table tr:hover {
+            background: #f8f9fa;
+        }
+        .details-toggle {
+            cursor: pointer;
+            color: #1a73e8;
+            font-size: 14px;
+            text-align: center;
+            margin-top: 10px;
+            padding: 8px;
+        }
+        .details-toggle:hover {
+            text-decoration: underline;
+        }
+        .details-container {
+            display: none;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .details-container.open {
+            display: block;
+        }
+
         /* Switch */
         .switch-container {
             display: flex;
@@ -428,6 +506,30 @@
                     </div>
                 </div>
             </div>
+
+            <!-- 高级选项 -->
+            <div class="advanced-toggle" onclick="toggleAdvanced()">
+                <span class="advanced-toggle-label">⚙️ 高级选项</span>
+                <span class="advanced-toggle-arrow" id="advancedArrow">▶</span>
+            </div>
+            <div class="advanced-panel" id="advancedPanel">
+                <div class="control-group switch-container" style="margin-bottom: 10px;">
+                    <span class="control-label">分水岭算法分离粘连菌落</span>
+                    <label class="switch">
+                        <input type="checkbox" id="useWatershed">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <div class="warning-text">⚠️ 分水岭可能导致过分割，使计数偏低</div>
+
+                <div class="control-group" style="margin-top: 12px;">
+                    <span class="control-label">最小圆度 (0=不过滤, 0.9=只保留圆形)</span>
+                    <div class="slider-row">
+                        <input type="range" id="minCircularity" min="0" max="0.9" step="0.05" value="0">
+                        <span class="slider-value" id="minCircularityOut">0</span>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <button id="processBtn" class="btn" onclick="processImage()" disabled>开始计数</button>
@@ -459,6 +561,9 @@
                 <img id="binaryImage" class="processed-image">
             </div>
             
+            <div id="detailsToggle" class="details-toggle" onclick="toggleDetails()" style="display:none;"></div>
+            <div id="detailsContainer" class="details-container"></div>
+
             <button class="btn" style="margin-top: 15px; background-color: #34a853;" onclick="reset()">拍摄下一张</button>
             <button class="btn" style="margin-top: 10px; background-color: #1a73e8;" onclick="downloadResult()">保存图片</button>
         </div>
@@ -806,6 +911,8 @@
             formData.append('max_area', document.getElementById('maxArea').value);
             formData.append('blur_ksize', document.getElementById('blurKsize').value);
             formData.append('min_distance_from_edge', document.getElementById('minDistanceFromEdge').value);
+            formData.append('use_watershed', document.getElementById('useWatershed').checked);
+            formData.append('min_circularity', document.getElementById('minCircularity').value);
             
             // 添加ROI数据
             if (roiMode !== 'none' && roiShape) {
@@ -868,17 +975,76 @@
         }
 
         function showResult(data) {
-            document.getElementById('loading').style.display = 'none';
             document.getElementById('result').style.display = 'block';
             
             document.getElementById('countValue').textContent = data.count;
             document.getElementById('timeValue').textContent = `${data.processing_ms.toFixed(0)}ms`;
             
-            if (data.processed_image_base64) {
-                document.getElementById('processedImage').src = 'data:image/jpeg;base64,' + data.processed_image_base64;
+            // 延迟加载图片，避免阻塞UI渲染
+            requestAnimationFrame(() => {
+                if (data.processed_image_base64) {
+                    const img = document.getElementById('processedImage');
+                    img.decoding = 'async';
+                    img.src = 'data:image/jpeg;base64,' + data.processed_image_base64;
+                }
+                // 二值图用更低优先级加载
+                setTimeout(() => {
+                    if (data.binary_image_base64) {
+                        const img = document.getElementById('binaryImage');
+                        img.decoding = 'async';
+                        img.src = 'data:image/jpeg;base64,' + data.binary_image_base64;
+                    }
+                }, 50);
+            });
+
+            // 显示菌落详情
+            showColonyDetails(data.colony_details || []);
+        }
+
+        function showColonyDetails(details) {
+            const toggleEl = document.getElementById('detailsToggle');
+            const containerEl = document.getElementById('detailsContainer');
+            if (!toggleEl || !containerEl) return;
+
+            if (details.length === 0) {
+                toggleEl.style.display = 'none';
+                containerEl.classList.remove('open');
+                return;
             }
-            if (data.binary_image_base64) {
-                document.getElementById('binaryImage').src = 'data:image/jpeg;base64,' + data.binary_image_base64;
+
+            toggleEl.style.display = 'block';
+            toggleEl.textContent = `📊 查看菌落详情 (${details.length}个)`;
+
+            let html = '<table class="colony-details-table"><thead><tr>';
+            html += '<th>编号</th><th>X</th><th>Y</th><th>面积</th>';
+            if (details.some(d => d.circularity !== null && d.circularity !== undefined)) {
+                html += '<th>圆度</th>';
+            }
+            html += '</tr></thead><tbody>';
+
+            details.forEach(d => {
+                html += `<tr><td>${d.id}</td><td>${d.x}</td><td>${d.y}</td><td>${d.area}</td>`;
+                if (details.some(dd => dd.circularity !== null && dd.circularity !== undefined)) {
+                    html += `<td>${d.circularity != null ? d.circularity.toFixed(2) : '-'}</td>`;
+                }
+                html += '</tr>';
+            });
+
+            html += '</tbody></table>';
+            containerEl.innerHTML = html;
+            containerEl.classList.remove('open');
+        }
+
+        function toggleDetails() {
+            const containerEl = document.getElementById('detailsContainer');
+            const toggleEl = document.getElementById('detailsToggle');
+            if (!containerEl) return;
+            containerEl.classList.toggle('open');
+            if (containerEl.classList.contains('open')) {
+                toggleEl.textContent = '📊 收起菌落详情';
+            } else {
+                const count = currentResult ? (currentResult.colony_details || []).length : 0;
+                toggleEl.textContent = `📊 查看菌落详情 (${count}个)`;
             }
         }
         
@@ -979,6 +1145,9 @@
             document.getElementById('result').style.display = 'none';
             document.getElementById('loading').style.display = 'none';
             setRoiAdjustVisible(false);
+            document.getElementById('advancedPanel').classList.remove('open');
+            document.getElementById('advancedArrow').classList.remove('open');
+            document.getElementById('detailsContainer').classList.remove('open');
             setStatus('');
         }
 
@@ -1002,6 +1171,7 @@
             bindSliderOutput('minDistanceFromEdge', 'minDistanceFromEdgeOut');
             bindSliderOutput('minArea', 'minAreaOut');
             bindSliderOutput('maxArea', 'maxAreaOut');
+            bindSliderOutput('minCircularity', 'minCircularityOut');
             const methodEl = document.getElementById('threshMethod');
             if (methodEl) {
                 methodEl.addEventListener('change', syncThreshMethodUI);
@@ -1015,6 +1185,8 @@
             bindParamChangeTip('minArea');
             bindParamChangeTip('maxArea');
             bindParamChangeTip('detectPetri');
+            bindParamChangeTip('useWatershed');
+            bindParamChangeTip('minCircularity');
             syncThreshMethodUI();
         }
 
@@ -1047,6 +1219,13 @@
             document.getElementById('processBtn').disabled = false;
             document.getElementById('processBtn').textContent = '重新计数';
             setStatus('参数已更新，可直接重新计数');
+        }
+
+        function toggleAdvanced() {
+            const panel = document.getElementById('advancedPanel');
+            const arrow = document.getElementById('advancedArrow');
+            panel.classList.toggle('open');
+            arrow.classList.toggle('open');
         }
     </script>
 </body>

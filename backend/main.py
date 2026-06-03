@@ -10,11 +10,16 @@ import base64
 import time
 import io
 import os
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
 
 # Import core algorithm and schemas
 from backend.core.algorithm import process_image
 from backend.schemas import CountResponse
+
+# 线程池用于CPU密集型任务，避免阻塞事件循环
+_executor = ThreadPoolExecutor(max_workers=2)
 
 app = FastAPI(
     title="Microbial Colony Counter API",
@@ -34,10 +39,20 @@ app.add_middleware(
 # Mount static files
 app.mount("/static", StaticFiles(directory="backend/static"), name="static")
 
-def image_to_base64(image: np.ndarray) -> str:
-    """Convert OpenCV image to base64 string"""
-    _, buffer = cv2.imencode('.jpg', image)
+def image_to_base64(image: np.ndarray, quality: int = 55) -> str:
+    """Convert OpenCV image to compressed base64 string"""
+    encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
+    _, buffer = cv2.imencode('.jpg', image, encode_params)
     return base64.b64encode(buffer).decode('utf-8')
+
+def make_thumbnail(image: np.ndarray, max_dim: int = 800) -> np.ndarray:
+    """生成缩略图用于前端显示，减小传输体积"""
+    h, w = image.shape[:2]
+    if max(h, w) <= max_dim:
+        return image
+    ratio = max_dim / max(h, w)
+    new_w, new_h = int(w * ratio), int(h * ratio)
+    return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 def decode_image(file_bytes: bytes) -> np.ndarray:
     """Decode image bytes to OpenCV format"""
@@ -59,6 +74,8 @@ async def count_colonies(
     max_area: int = Form(5000, description="最大菌落面积"),
     min_distance_from_edge: int = Form(20, description="最小边缘距离"),
     detect_petri_dish: bool = Form(False, description="是否自动检测培养皿"),
+    use_watershed: bool = Form(False, description="是否使用分水岭算法分离粘连菌落"),
+    min_circularity: float = Form(0.0, description="最小圆度 (0-1, 0=不过滤)"),
     roi_type: Optional[str] = Form(None, description="ROI类型: 'circle' 或 'rectangle'"),
     roi_data: Optional[str] = Form(None, description="ROI数据 (逗号分隔): x,y,w,h 或 cx,cy,r")
 ):
@@ -73,31 +90,36 @@ async def count_colonies(
 
     # 2. Parse ROI
     manual_roi = None
-    # 只有当 roi_type 和 roi_data 都有值且不为 "none" 时才解析
     if roi_type and roi_data and roi_type != "none":
         try:
-            parts = [int(float(x.strip())) for x in roi_data.split(',')] # 使用 float 先转换，防止 123.0 报错
+            parts = [int(float(x.strip())) for x in roi_data.split(',')]
             if roi_type == "circle" and len(parts) == 3:
                 manual_roi = tuple(parts)
             elif roi_type == "rectangle" and len(parts) == 4:
                 manual_roi = tuple(parts)
         except Exception as e:
             print(f"ROI parsing error: {e}")
-            pass # Ignore invalid ROI
+            pass
 
-    # 3. Process image
-    result = process_image(
-        image=cv_image,
-        blur_ksize=blur_ksize,
-        thresh_method=thresh_method,
-        thresh_val=thresh_val,
-        adaptive_block_size=adaptive_block_size,
-        adaptive_c=adaptive_c,
-        min_area=min_area,
-        max_area=max_area,
-        min_distance_from_edge=min_distance_from_edge,
-        detect_petri_dish=detect_petri_dish,
-        manual_roi=manual_roi
+    # 3. 在线程池中执行CPU密集型算法，避免阻塞事件循环
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        _executor,
+        lambda: process_image(
+            image=cv_image,
+            blur_ksize=blur_ksize,
+            thresh_method=thresh_method,
+            thresh_val=thresh_val,
+            adaptive_block_size=adaptive_block_size,
+            adaptive_c=adaptive_c,
+            min_area=min_area,
+            max_area=max_area,
+            min_distance_from_edge=min_distance_from_edge,
+            detect_petri_dish=detect_petri_dish,
+            manual_roi=manual_roi,
+            use_watershed=use_watershed,
+            min_circularity=min_circularity
+        )
     )
 
     if result["error"]:
@@ -109,20 +131,21 @@ async def count_colonies(
 
     response = CountResponse(
         count=result["count"],
-        quality_score=None, # To be implemented
+        quality_score=None,
         warnings=[],
         petri_circle=result.get("petri_circle"),
-        processing_ms=processing_ms
+        processing_ms=processing_ms,
+        colony_details=result.get("colony_details", [])
     )
 
-    # Encode images to base64 if needed (optional for mobile, but good for MVP)
-    # For a real production app, we would upload to S3 and return URLs.
-    # Here we return base64 for simplicity.
+    # 5. 生成缩略图 + 压缩JPEG，大幅减小响应体积
     if result["binary_image"] is not None:
-        response.binary_image_base64 = image_to_base64(result["binary_image"])
+        thumb = make_thumbnail(result["binary_image"], max_dim=800)
+        response.binary_image_base64 = image_to_base64(thumb, quality=50)
     
     if result["processed_image"] is not None:
-        response.processed_image_base64 = image_to_base64(result["processed_image"])
+        thumb = make_thumbnail(result["processed_image"], max_dim=800)
+        response.processed_image_base64 = image_to_base64(thumb, quality=55)
 
     return response
 

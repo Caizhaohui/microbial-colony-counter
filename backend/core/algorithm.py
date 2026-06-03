@@ -241,7 +241,7 @@ def process_image(
         # ── 大图自动缩放 ──
         original_height, original_width = image.shape[:2]
         scale_ratio = 1.0
-        max_dimension = 2000
+        max_dimension = 1200
 
         if max(original_height, original_width) > max_dimension:
             scale_ratio = max_dimension / max(original_height, original_width)
