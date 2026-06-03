@@ -3,49 +3,230 @@ import cv2
 import numpy as np
 from typing import Tuple, Optional, Dict, Any, List
 
+
 def detect_petri_dish_circle(image: np.ndarray) -> Optional[Tuple[int, int, int]]:
     """
-    检测培养皿的圆形区域
+    优化版培养皿圆形区域检测
+    - 对大图先缩小再检测，提升速度
+    - 找到合理圆后立即停止，避免多余计算
     :param image: 输入图像 (BGR)
     :return: (x, y, r) 或 None
     """
     try:
-        # 转换为灰度
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        height, width = image.shape[:2]
+        min_dim = min(height, width)
 
-        # 高斯模糊减少噪声
+        # 对大图先缩小以加速检测
+        max_detect_dim = 800
+        scale_back = 1.0
+        detect_image = image
+
+        if min_dim > max_detect_dim:
+            scale_back = max_detect_dim / min_dim
+            new_w = int(width * scale_back)
+            new_h = int(height * scale_back)
+            detect_image = cv2.resize(image, (new_w, new_h))
+            det_h, det_w = detect_image.shape[:2]
+            det_min_dim = min(det_h, det_w)
+        else:
+            det_h, det_w = height, width
+            det_min_dim = min_dim
+
+        gray = cv2.cvtColor(detect_image, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (9, 9), 2)
 
-        # Hough圆检测
-        # 参数根据原 main.py 调整
-        min_dim = min(image.shape[:2])
-        circles = cv2.HoughCircles(
-            blurred,
-            cv2.HOUGH_GRADIENT,
-            dp=1,
-            minDist=100,
-            param1=50,
-            param2=30,
-            minRadius=int(min_dim * 0.2),
-            maxRadius=int(min_dim * 0.45)
-        )
+        img_center_x = det_w / 2.0
+        img_center_y = det_h / 2.0
 
-        if circles is not None:
-            # 取第一个检测到的圆（通常是最大的）
-            circles = np.uint16(np.around(circles))
-            x, y, r = circles[0][0]
-            return (int(x), int(y), int(r))
-        else:
+        min_radius = int(det_min_dim * 0.15)
+        max_radius = int(det_min_dim * 0.48)
+
+        # 参数集：从宽松到严格（宽松参数更快找到圆）
+        param_sets = [
+            {"dp": 1.2, "param1": 40, "param2": 25},  # 宽松（快速）
+            {"dp": 1, "param1": 50, "param2": 30},    # 标准
+            {"dp": 1, "param1": 60, "param2": 35},    # 中等
+        ]
+
+        best_circle = None
+        best_score = float('inf')
+
+        for params in param_sets:
+            circles = cv2.HoughCircles(
+                blurred,
+                cv2.HOUGH_GRADIENT,
+                dp=params["dp"],
+                minDist=det_min_dim // 2,
+                param1=params["param1"],
+                param2=params["param2"],
+                minRadius=min_radius,
+                maxRadius=max_radius
+            )
+
+            if circles is not None:
+                circles = np.uint16(np.around(circles))
+                for circle in circles[0]:
+                    x, y, r = circle
+                    if r < min_radius or r > max_radius:
+                        continue
+
+                    # 评分：靠近中心 + 半径合理
+                    dx = float(x) - img_center_x
+                    dy = float(y) - img_center_y
+                    distance_to_center = np.sqrt(dx * dx + dy * dy)
+                    radius_ratio = r / (det_min_dim * 0.35)
+                    radius_penalty = abs(radius_ratio - 1.0) * 100
+                    score = distance_to_center + radius_penalty
+
+                    if score < best_score:
+                        best_score = score
+                        best_circle = circle
+
+            # 找到合理圆后停止，不再尝试更严格参数
+            if best_circle is not None:
+                break
+
+        if best_circle is None:
             return None
+
+        # 还原到原图坐标
+        x, y, r = best_circle
+        orig_x = int(x / scale_back)
+        orig_y = int(y / scale_back)
+        orig_r = int(r / scale_back)
+
+        return (orig_x, orig_y, orig_r)
 
     except Exception as e:
         print(f"培养皿检测失败: {e}")
         return None
 
+
+def _apply_watershed(binary_img: np.ndarray, morph_kernel_size: int) -> np.ndarray:
+    """
+    分水岭算法分离粘连菌落
+    :param binary_img: 二值化图像 (白色=前景)
+    :param morph_kernel_size: 形态学核大小
+    :return: 分离后的二值图像
+    """
+    kernel = np.ones((morph_kernel_size, morph_kernel_size), np.uint8)
+
+    # 形态学开运算去除噪点
+    opening = cv2.morphologyEx(binary_img, cv2.MORPH_OPEN, kernel, iterations=2)
+
+    # 确定背景区域（膨胀）
+    sure_bg = cv2.dilate(opening, kernel, iterations=3)
+
+    # 确定前景区域（距离变换 + 阈值）
+    dist_transform = cv2.distanceTransform(opening, cv2.DIST_L2, 5)
+    ret, sure_fg = cv2.threshold(dist_transform, 0.4 * dist_transform.max(), 255, 0)
+    sure_fg = np.uint8(sure_fg)
+
+    # 未知区域
+    unknown = cv2.subtract(sure_bg, sure_fg)
+
+    # 连通组件标记
+    ret, markers = cv2.connectedComponents(sure_fg)
+
+    # 标记 +1（0 保留给分水岭边界）
+    markers = markers + 1
+
+    # 未知区域标记为 0
+    markers[unknown == 255] = 0
+
+    # 创建3通道图像用于 watershed
+    binary_3ch = cv2.cvtColor(binary_img, cv2.COLOR_GRAY2BGR)
+    markers = cv2.watershed(binary_3ch, markers)
+
+    # 从 watershed 结果重建分离后的二值图像
+    # 将边界（-1）设为0，各区域设为255，产生分离效果
+    labels = markers.copy()
+    labels[labels == -1] = 0   # watershed 边界
+    labels[labels == 1] = 0    # 背景
+
+    separated = np.zeros_like(binary_img)
+
+    for label_id in range(2, labels.max() + 1):
+        region = (labels == label_id).astype(np.uint8) * 255
+        # 对每个独立区域找外部轮廓并绘制（填充），实现分离
+        cnts, _ = cv2.findContours(region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for cnt in cnts:
+            if cv2.contourArea(cnt) > 5:
+                cv2.drawContours(separated, [cnt], -1, 255, -1)
+
+    return separated
+
+
+def _split_large_blob(cnt: np.ndarray, min_area: int, morph_kernel_size: int) -> list:
+    """
+    对超大面积的融合菌落区域进行局部分水岭拆分
+    :param cnt: 轮廓
+    :param min_area: 最小菌落面积
+    :param morph_kernel_size: 形态学核大小
+    :return: 拆分后的子轮廓列表
+    """
+    kernel = np.ones((morph_kernel_size, morph_kernel_size), np.uint8)
+
+    # 创建仅包含此轮廓的二值图像
+    x, y, w, h = cv2.boundingRect(cnt)
+    margin = 5
+    roi_x = max(0, x - margin)
+    roi_y = max(0, y - margin)
+    roi_w = w + 2 * margin
+    roi_h = h + 2 * margin
+
+    local_mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
+    shifted_cnt = cnt.copy()
+    shifted_cnt[:, :, 0] -= roi_x
+    shifted_cnt[:, :, 1] -= roi_y
+    cv2.drawContours(local_mask, [shifted_cnt], -1, 255, -1)
+
+    # 形态学开运算去除小噪点
+    opening = cv2.morphologyEx(local_mask, cv2.MORPH_OPEN, kernel, iterations=2)
+    if cv2.countNonZero(opening) == 0:
+        return []
+
+    # 确定背景
+    sure_bg = cv2.dilate(opening, kernel, iterations=3)
+
+    # 距离变换 → 确定前景（菌落中心）
+    dist_transform = cv2.distanceTransform(opening, cv2.DIST_L2, 5)
+    # 阈值比例较低（0.2），以保留更多小菌落中心
+    ret, sure_fg = cv2.threshold(dist_transform, 0.2 * dist_transform.max(), 255, 0)
+    sure_fg = np.uint8(sure_fg)
+
+    unknown = cv2.subtract(sure_bg, sure_fg)
+    ret, markers = cv2.connectedComponents(sure_fg)
+    markers = markers + 1
+    markers[unknown == 255] = 0
+
+    local_3ch = cv2.cvtColor(local_mask, cv2.COLOR_GRAY2BGR)
+    markers = cv2.watershed(local_3ch, markers)
+
+    # 提取各子区域轮廓
+    sub_contours = []
+    labels = markers.copy()
+    labels[labels == -1] = 0
+    labels[labels == 1] = 0
+
+    for label_id in range(2, labels.max() + 1):
+        region = (labels == label_id).astype(np.uint8) * 255
+        cnts, _ = cv2.findContours(region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for c in cnts:
+            sub_area = cv2.contourArea(c)
+            if sub_area >= min_area:
+                # 还原到原始图像坐标系
+                c[:, :, 0] += roi_x
+                c[:, :, 1] += roi_y
+                sub_contours.append(c)
+
+    return sub_contours
+
+
 def process_image(
     image: np.ndarray,
     blur_ksize: int = 7,
-    thresh_method: str = "adaptive", # "manual" or "adaptive"
+    thresh_method: str = "adaptive",  # "manual" or "adaptive"
     thresh_val: int = 100,
     adaptive_block_size: int = 11,
     adaptive_c: int = 2,
@@ -53,168 +234,224 @@ def process_image(
     max_area: int = 5000,
     min_distance_from_edge: int = 20,
     detect_petri_dish: bool = False,
-    manual_roi: Optional[Tuple] = None # (x, y, w, h) for rect or (cx, cy, r) for circle
+    manual_roi: Optional[Tuple] = None,  # (x, y, w, h) rect or (cx, cy, r) circle
+    use_watershed: bool = False,
+    min_circularity: float = 0.0
 ) -> Dict[str, Any]:
     """
     核心图像处理函数
+
+    :param image: 输入图像 (BGR)
+    :param blur_ksize: 高斯模糊核大小 (奇数)
+    :param thresh_method: 二值化方法 "manual" 或 "adaptive"
+    :param thresh_val: 手动阈值 (0-255)
+    :param adaptive_block_size: 自适应阈值块大小 (奇数)
+    :param adaptive_c: 自适应阈值常数C
+    :param min_area: 最小菌落面积 (像素)
+    :param max_area: 最大菌落面积 (像素)
+    :param min_distance_from_edge: 最小边缘距离 (像素)
+    :param detect_petri_dish: 是否自动检测培养皿
+    :param manual_roi: 手动选择区域
+    :param use_watershed: 是否使用分水岭算法分离粘连菌落
+    :param min_circularity: 最小圆度 (0-1, 0=不过滤, 越接近1越圆)
+    :return: 结果字典
     """
     try:
-        # 大图自动缩放优化
+        # ── 大图自动缩放 ──
         original_height, original_width = image.shape[:2]
         scale_ratio = 1.0
-        max_dimension = 2000 # 限制最大边长
+        max_dimension = 2000
 
         if max(original_height, original_width) > max_dimension:
             scale_ratio = max_dimension / max(original_height, original_width)
             new_width = int(original_width * scale_ratio)
             new_height = int(original_height * scale_ratio)
             image = cv2.resize(image, (new_width, new_height))
-        
+
         height, width = image.shape[:2]
         output_image = image.copy()
-        
-        # 结果字典
+
         result = {
             "count": 0,
             "binary_image": None,
             "processed_image": None,
             "petri_circle": None,
-            "error": None
+            "error": None,
+            "scale_ratio": scale_ratio,
+            "original_size": (original_width, original_height),
+            "colony_details": []
         }
 
-        # 调整参数以适应缩放
-        # 注意：这里我们主要调整面积参数，其他参数如 blur_ksize, block_size 相对不敏感或难以线性调整
+        # ── 缩放自适应参数 ──
         if scale_ratio != 1.0:
-            min_area = int(min_area * (scale_ratio * scale_ratio))
-            max_area = int(max_area * (scale_ratio * scale_ratio))
-            min_distance_from_edge = int(min_distance_from_edge * scale_ratio)
-            if manual_roi is not None:
-                # 检查 manual_roi 长度，以防万一
-                if len(manual_roi) >= 3:
-                    manual_roi = tuple(int(v * scale_ratio) for v in manual_roi)
+            sr2 = scale_ratio * scale_ratio
+            min_area = max(1, int(min_area * sr2))
+            max_area = max(min_area + 1, int(max_area * sr2))
+            min_distance_from_edge = max(0, int(min_distance_from_edge * scale_ratio))
+            if manual_roi is not None and len(manual_roi) >= 3:
+                manual_roi = tuple(int(v * scale_ratio) for v in manual_roi)
 
-        # 如果启用培养皿检测，先检测圆形区域
+        # ── 形态学核大小（随缩放调整）──
+        morph_kernel_size = max(2, int(3 * scale_ratio)) if scale_ratio != 1.0 else 3
+
+        # ── 培养皿检测 ──
         petri_mask = None
         if detect_petri_dish:
             petri_mask = detect_petri_dish_circle(image)
             if petri_mask is not None:
                 result["petri_circle"] = petri_mask
-                # 在输出图像上绘制检测到的培养皿圆形
                 cv2.circle(output_image, (int(petri_mask[0]), int(petri_mask[1])),
-                         int(petri_mask[2]), (255, 0, 0), 3)  # 蓝色圆圈标记培养皿
+                           int(petri_mask[2]), (255, 0, 0), 3)
 
-        # 1. 转换为灰度图
+        # ── 1. 灰度化 ──
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # 如果有手动选择的ROI，创建一个掩码
+        # ── 手动 ROI 掩码 ──
         roi_mask = None
         if manual_roi is not None:
-            if len(manual_roi) == 3:  # 圆形ROI (center_x, center_y, radius)
-                center_x, center_y, radius = manual_roi
+            if len(manual_roi) == 3:  # 圆形 (cx, cy, r)
+                cx, cy, r = manual_roi
                 roi_mask = np.zeros_like(gray)
-                cv2.circle(roi_mask, (int(center_x), int(center_y)), int(radius), 255, -1)
-                # 在输出图像上绘制选择的ROI圆形
-                cv2.circle(output_image, (int(center_x), int(center_y)), int(radius), (0, 255, 255), 3)  # 黄色圆圈
-            elif len(manual_roi) == 4:  # 矩形ROI (x, y, w, h)
-                x, y, w, h = manual_roi
+                cv2.circle(roi_mask, (int(cx), int(cy)), int(r), 255, -1)
+                cv2.circle(output_image, (int(cx), int(cy)), int(r), (0, 255, 255), 3)
+            elif len(manual_roi) == 4:  # 矩形 (x, y, w, h)
+                rx, ry, rw, rh = manual_roi
                 roi_mask = np.zeros_like(gray)
-                cv2.rectangle(roi_mask, (x, y), (x + w, y + h), 255, -1)
-                # 在输出图像上绘制选择的ROI矩形
-                cv2.rectangle(output_image, (x, y), (x + w, y + h), (0, 255, 255), 3)  # 黄色矩形
+                cv2.rectangle(roi_mask, (rx, ry), (rx + rw, ry + rh), 255, -1)
+                cv2.rectangle(output_image, (rx, ry), (rx + rw, ry + rh), (0, 255, 255), 3)
 
-        # 如果有培养皿掩码，只处理圆形区域内的图像
+        # ── 应用掩码到灰度图 ──
         if petri_mask is not None:
-            center_x, center_y, radius = petri_mask
-            # 创建圆形掩码
+            pcx, pcy, pr = petri_mask
             mask = np.zeros_like(gray)
-            cv2.circle(mask, (int(center_x), int(center_y)), int(radius), 255, -1)
+            cv2.circle(mask, (int(pcx), int(pcy)), int(pr), 255, -1)
             gray = cv2.bitwise_and(gray, gray, mask=mask)
         elif roi_mask is not None:
-            # 如果有手动ROI，使用矩形掩码
             gray = cv2.bitwise_and(gray, roi_mask)
 
-        # 2. 高斯模糊去噪
-        # 确保ksize是奇数
+        # ── 2. 高斯模糊去噪 ──
         if blur_ksize % 2 == 0:
             blur_ksize += 1
         blurred = cv2.GaussianBlur(gray, (blur_ksize, blur_ksize), 0)
 
-        # 3. 二值化
+        # ── 3. 二值化 ──
         if thresh_method == "manual":
             _, thresh = cv2.threshold(blurred, thresh_val, 255, cv2.THRESH_BINARY_INV)
         else:  # adaptive
-            # 确保block_size是奇数
             if adaptive_block_size % 2 == 0:
                 adaptive_block_size += 1
-            thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                         cv2.THRESH_BINARY_INV, adaptive_block_size, adaptive_c)
+            thresh = cv2.adaptiveThreshold(
+                blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY_INV, adaptive_block_size, adaptive_c
+            )
 
-        # 应用掩码到二值化结果
+        # ── 应用掩码到二值图 ──
         if petri_mask is not None:
-            center_x, center_y, radius = petri_mask
+            pcx, pcy, pr = petri_mask
             mask = np.zeros_like(thresh)
-            cv2.circle(mask, (int(center_x), int(center_y)), int(radius), 255, -1)
+            cv2.circle(mask, (int(pcx), int(pcy)), int(pr), 255, -1)
             thresh = cv2.bitwise_and(thresh, mask)
         elif roi_mask is not None:
-            # 如果有手动ROI，应用矩形掩码
             thresh = cv2.bitwise_and(thresh, roi_mask)
 
         result["binary_image"] = thresh.copy()
 
-        # 4. 轮廓检测 (只检测最外层的轮廓，适合分离的菌落)
+        # ── 4. 分水岭分离粘连菌落（可选）──
+        if use_watershed:
+            thresh = _apply_watershed(thresh, morph_kernel_size)
+            result["binary_image"] = thresh.copy()
+
+        # ── 5. 轮廓检测 ──
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        # 5. 过滤和计数
+        # ── 6. 过滤和计数（含大面积融合区域自动拆分）──
         colony_count = 0
+        colony_details = []
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
 
-            # 获取轮廓的边界框
-            x, y, w, h = cv2.boundingRect(cnt)
+            # 面积过小直接跳过
+            if area < min_area:
+                continue
 
-            # 检查是否距离边缘足够远
-            if petri_mask is not None:
-                # 如果有培养皿掩码，检查是否在圆形区域内
-                center_x, center_y, radius = petri_mask
-                # 计算轮廓中心点
-                M = cv2.moments(cnt)
-                if M["m00"] != 0:
-                    cX = int(M["m10"] / M["m00"])
-                    cY = int(M["m01"] / M["m00"])
-                    # 检查是否在圆内
-                    dx = float(cX - center_x)
-                    dy = float(cY - center_y)
-                    distance_from_center = np.sqrt(dx*dx + dy*dy)
-                    in_petri = distance_from_center <= radius * 0.9  # 稍微缩小一点，避免边缘
-                else:
-                    in_petri = False
+            # 构建待处理轮廓列表
+            # 面积在范围内 → 直接处理
+            # 面积超过 max_area → 尝试分水岭拆分为多个独立菌落
+            if area <= max_area:
+                candidates = [cnt]
             else:
-                # 传统边缘距离检查
-                distance_from_edge = min(x, y, width - (x + w), height - (y + h))
-                in_petri = distance_from_edge >= min_distance_from_edge
+                candidates = _split_large_blob(cnt, min_area, morph_kernel_size)
 
-            # 根据面积和位置过滤
-            if min_area < area < max_area and in_petri:
+            for candidate in candidates:
+                c_area = cv2.contourArea(candidate)
+                if c_area < min_area or c_area > max_area:
+                    continue
+
+                cx, cy, cw, ch = cv2.boundingRect(candidate)
+
+                # ── 位置检查 ──
+                if petri_mask is not None:
+                    pcx, pcy, pr = petri_mask
+                    M = cv2.moments(candidate)
+                    if M["m00"] != 0:
+                        mX = int(M["m10"] / M["m00"])
+                        mY = int(M["m01"] / M["m00"])
+                        dx = float(mX - pcx)
+                        dy = float(mY - pcy)
+                        in_region = np.sqrt(dx * dx + dy * dy) <= pr * 0.9
+                    else:
+                        in_region = False
+                else:
+                    dist = min(cx, cy, width - (cx + cw), height - (cy + ch))
+                    in_region = dist >= min_distance_from_edge
+
+                if not in_region:
+                    continue
+
+                # ── 圆度过滤 ──
+                circularity = 0.0
+                if min_circularity > 0:
+                    perimeter = cv2.arcLength(candidate, True)
+                    if perimeter > 0:
+                        circularity = 4 * np.pi * c_area / (perimeter * perimeter)
+                    if circularity < min_circularity:
+                        continue
+
+                # ── 通过所有过滤，计入结果 ──
                 colony_count += 1
 
-                # 在 output_image 上绘制轮廓 (绿色轮廓)
-                cv2.drawContours(output_image, [cnt], -1, (0, 255, 0), 2)
+                cv2.drawContours(output_image, [candidate], -1, (0, 255, 0), 2)
 
-                # (可选) 绘制中心点和编号
-                M = cv2.moments(cnt)
+                M = cv2.moments(candidate)
                 if M["m00"] != 0:
                     cX = int(M["m10"] / M["m00"])
                     cY = int(M["m01"] / M["m00"])
                     cv2.putText(output_image, str(colony_count), (cX - 10, cY + 5),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)  # 红色编号
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                    colony_details.append({
+                        "id": colony_count,
+                        "x": int(cX),
+                        "y": int(cY),
+                        "area": int(c_area),
+                        "circularity": round(float(circularity), 4) if min_circularity > 0 else None
+                    })
 
         result["processed_image"] = output_image
         result["count"] = colony_count
+        result["colony_details"] = colony_details
         return result
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        result["error"] = str(e)
-        return result
+        return {
+            "count": 0,
+            "binary_image": None,
+            "processed_image": None,
+            "petri_circle": None,
+            "error": str(e),
+            "scale_ratio": 1.0,
+            "original_size": (image.shape[1], image.shape[0]),
+            "colony_details": []
+        }
