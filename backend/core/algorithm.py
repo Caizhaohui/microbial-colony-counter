@@ -6,96 +6,77 @@ from typing import Tuple, Optional, Dict, Any, List
 
 def detect_petri_dish_circle(image: np.ndarray) -> Optional[Tuple[int, int, int]]:
     """
-    优化版培养皿圆形区域检测
-    - 对大图先缩小再检测，提升速度
-    - 找到合理圆后立即停止，避免多余计算
+    增强版培养皿圆形区域检测
+    使用多组参数尝试，选取最佳圆（最接近图像中心且半径合理的）
     :param image: 输入图像 (BGR)
     :return: (x, y, r) 或 None
     """
     try:
-        height, width = image.shape[:2]
-        min_dim = min(height, width)
-
-        # 对大图先缩小以加速检测
-        max_detect_dim = 800
-        scale_back = 1.0
-        detect_image = image
-
-        if min_dim > max_detect_dim:
-            scale_back = max_detect_dim / min_dim
-            new_w = int(width * scale_back)
-            new_h = int(height * scale_back)
-            detect_image = cv2.resize(image, (new_w, new_h))
-            det_h, det_w = detect_image.shape[:2]
-            det_min_dim = min(det_h, det_w)
-        else:
-            det_h, det_w = height, width
-            det_min_dim = min_dim
-
-        gray = cv2.cvtColor(detect_image, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (9, 9), 2)
 
-        img_center_x = det_w / 2.0
-        img_center_y = det_h / 2.0
+        height, width = image.shape[:2]
+        min_dim = min(height, width)
+        img_center_x = width / 2.0
+        img_center_y = height / 2.0
 
-        min_radius = int(det_min_dim * 0.15)
-        max_radius = int(det_min_dim * 0.48)
+        all_circles = []
 
-        # 参数集：从宽松到严格（宽松参数更快找到圆）
+        # 多组参数尝试，从严格到宽松
         param_sets = [
-            {"dp": 1.2, "param1": 40, "param2": 25},  # 宽松（快速）
-            {"dp": 1, "param1": 50, "param2": 30},    # 标准
-            {"dp": 1, "param1": 60, "param2": 35},    # 中等
+            {"dp": 1, "param1": 80, "param2": 40},   # 严格
+            {"dp": 1, "param1": 60, "param2": 35},   # 中等
+            {"dp": 1, "param1": 50, "param2": 30},   # 标准
+            {"dp": 1.2, "param1": 40, "param2": 25},  # 宽松
         ]
 
-        best_circle = None
-        best_score = float('inf')
+        min_radius = int(min_dim * 0.15)
+        max_radius = int(min_dim * 0.48)
 
         for params in param_sets:
             circles = cv2.HoughCircles(
                 blurred,
                 cv2.HOUGH_GRADIENT,
                 dp=params["dp"],
-                minDist=det_min_dim // 2,
+                minDist=min_dim // 2,
                 param1=params["param1"],
                 param2=params["param2"],
                 minRadius=min_radius,
                 maxRadius=max_radius
             )
-
             if circles is not None:
                 circles = np.uint16(np.around(circles))
-                for circle in circles[0]:
-                    x, y, r = circle
-                    if r < min_radius or r > max_radius:
-                        continue
+                for c in circles[0]:
+                    all_circles.append(c)
 
-                    # 评分：靠近中心 + 半径合理
-                    dx = float(x) - img_center_x
-                    dy = float(y) - img_center_y
-                    distance_to_center = np.sqrt(dx * dx + dy * dy)
-                    radius_ratio = r / (det_min_dim * 0.35)
-                    radius_penalty = abs(radius_ratio - 1.0) * 100
-                    score = distance_to_center + radius_penalty
-
-                    if score < best_score:
-                        best_score = score
-                        best_circle = circle
-
-            # 找到合理圆后停止，不再尝试更严格参数
-            if best_circle is not None:
-                break
-
-        if best_circle is None:
+        if not all_circles:
             return None
 
-        # 还原到原图坐标
-        x, y, r = best_circle
-        orig_x = int(x / scale_back)
-        orig_y = int(y / scale_back)
-        orig_r = int(r / scale_back)
+        # 选择最佳圆：综合评分 = 靠近图像中心 + 半径合理性
+        best_circle = None
+        best_score = float('inf')
 
-        return (orig_x, orig_y, orig_r)
+        for circle in all_circles:
+            x, y, r = circle
+            # 检查半径合理性
+            if r < min_radius or r > max_radius:
+                continue
+            # 计算圆心到图像中心的距离
+            dx = float(x) - img_center_x
+            dy = float(y) - img_center_y
+            distance_to_center = np.sqrt(dx * dx + dy * dy)
+            # 评分：越小越好（优先靠近中心、半径适中的圆）
+            radius_ratio = r / (min_dim * 0.35)
+            radius_penalty = abs(radius_ratio - 1.0) * 100
+            score = distance_to_center + radius_penalty
+            if score < best_score:
+                best_score = score
+                best_circle = circle
+
+        if best_circle is not None:
+            return (int(best_circle[0]), int(best_circle[1]), int(best_circle[2]))
+
+        return None
 
     except Exception as e:
         print(f"培养皿检测失败: {e}")
