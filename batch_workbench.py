@@ -1,8 +1,11 @@
 """
 电脑端批次标定工作台。
-策略1: 部分点选 + 总数 N
-策略2: 全量点选
-策略3: 图片 + 菌落数
+
+- 多参考盘联合标定（1～5 块，建议 2～5）
+- 主路径：图 + 菌落数 N
+- 增强：对当前盘可选点选（左键加点 / 右键删点）
+- 标定后批量计数其余平板
+
 不修改原有自动计数流程，由 main.py 工具栏打开。
 """
 
@@ -12,7 +15,7 @@ import json
 import os
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
@@ -21,10 +24,11 @@ from PIL import Image, ImageTk
 
 from backend.core.batch import batch_count_paths, results_to_csv_rows
 from backend.core.calibrator import (
+    MAX_REF_PLATES,
     STRATEGY_COUNT_ONLY,
     STRATEGY_FULL_POINTS,
     STRATEGY_PARTIAL_POINTS,
-    calibrate,
+    calibrate_multi,
     params_to_process_kwargs,
 )
 from backend.core.pointset import (
@@ -35,36 +39,73 @@ from backend.core.pointset import (
 )
 
 
+class RefPlate:
+    """一块参考盘的内存状态。"""
+
+    def __init__(self, path: str, image: np.ndarray, total_gt: Optional[int] = None):
+        self.path = path
+        self.name = os.path.basename(path)
+        self.image = image
+        self.total_gt: Optional[int] = total_gt
+        self.points: List[Dict[str, Any]] = []
+        self.undo_stack: List[List[Dict[str, Any]]] = []
+
+    def display_label(self) -> str:
+        n = self.total_gt if self.total_gt is not None else "?"
+        pts = len(self.points)
+        extra = f", 点{pts}" if pts else ""
+        return f"{self.name}  N={n}{extra}"
+
+    def to_ref_dict(self) -> Dict[str, Any]:
+        """转为 calibrate_multi 输入。点选为增强：有点且有 N → partial；仅点无 N → full。"""
+        d: Dict[str, Any] = {
+            "name": self.name,
+            "path": self.path,
+            "image": self.image,
+            "total_gt": self.total_gt,
+            "points": list(self.points),
+        }
+        if self.points and self.total_gt is not None and int(self.total_gt) >= 1:
+            if len(self.points) >= 5:
+                d["strategy"] = STRATEGY_PARTIAL_POINTS
+            else:
+                d["strategy"] = STRATEGY_COUNT_ONLY  # 少量点仍可作弱增强（normalize 内）
+        elif self.points and (self.total_gt is None or int(self.total_gt) < 1):
+            d["strategy"] = STRATEGY_FULL_POINTS
+            d["total_gt"] = len(self.points)
+        else:
+            d["strategy"] = STRATEGY_COUNT_ONLY
+        return d
+
+
 class BatchWorkbench(tk.Toplevel):
     def __init__(self, master):
         super().__init__(master)
-        self.title("批次标定工作台")
-        self.geometry("1100x720")
-        self.minsize(900, 600)
+        self.title("批次标定工作台 · 多参考盘联合标定")
+        self.geometry("1180x760")
+        self.minsize(960, 640)
 
-        # 状态
-        self.ref_path: Optional[str] = None
-        self.ref_image: Optional[np.ndarray] = None  # BGR
-        self.points: List[Dict[str, Any]] = []
-        self.undo_stack: List[List[Dict[str, Any]]] = []
+        self.refs: List[RefPlate] = []
+        self.current_idx: int = -1
+
         self.calibrated_params: Optional[Dict[str, Any]] = None
         self.calib_meta: Optional[Dict[str, Any]] = None
         self.batch_paths: List[str] = []
         self.batch_results: List[Dict[str, Any]] = []
         self.is_busy = False
 
-        # 显示缩放
         self._photo = None
         self._disp_scale = 1.0
         self._offset = (0.0, 0.0)
-        self._img_size = (1, 1)
 
-        self.strategy_var = tk.StringVar(value=STRATEGY_COUNT_ONLY)
-        self.total_n_var = tk.StringVar(value="")
         self.batch_name_var = tk.StringVar(value="批次1")
-        self.status_var = tk.StringVar(value="请加载参考盘图片")
-        self.point_count_var = tk.StringVar(value="点选: 0")
+        self.total_n_var = tk.StringVar(value="")
+        self.status_var = tk.StringVar(
+            value=f"请添加参考盘（建议 2～{MAX_REF_PLATES} 块，主路径：图 + 菌落数 N）"
+        )
+        self.point_count_var = tk.StringVar(value="当前盘点选: 0")
         self.result_summary_var = tk.StringVar(value="")
+        self.ref_count_var = tk.StringVar(value="参考盘: 0 / 最多 5")
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -77,31 +118,35 @@ class BatchWorkbench(tk.Toplevel):
         tk.Label(top, text="批次名:", bg="#f0f0f0").pack(side=tk.LEFT)
         tk.Entry(top, textvariable=self.batch_name_var, width=12).pack(side=tk.LEFT, padx=4)
 
-        tk.Button(top, text="📂 加载参考盘", command=self.load_reference,
-                  bg="#4CAF50", fg="white", relief=tk.FLAT, padx=10).pack(side=tk.LEFT, padx=6)
+        tk.Button(
+            top, text="➕ 添加参考盘…", command=self.add_references,
+            bg="#4CAF50", fg="white", relief=tk.FLAT, padx=10
+        ).pack(side=tk.LEFT, padx=6)
+        tk.Button(top, text="移除当前", command=self.remove_current_ref).pack(side=tk.LEFT, padx=2)
+        tk.Button(top, text="清空参考", command=self.clear_refs).pack(side=tk.LEFT, padx=2)
 
-        tk.Label(top, text="策略:", bg="#f0f0f0").pack(side=tk.LEFT, padx=(12, 2))
-        strategies = [
-            (STRATEGY_PARTIAL_POINTS, "1.部分点选+总数"),
-            (STRATEGY_FULL_POINTS, "2.全量点选"),
-            (STRATEGY_COUNT_ONLY, "3.图片+菌落数"),
-        ]
-        for val, label in strategies:
-            tk.Radiobutton(
-                top, text=label, variable=self.strategy_var, value=val,
-                bg="#f0f0f0", command=self._on_strategy_change
-            ).pack(side=tk.LEFT, padx=2)
+        tk.Label(top, textvariable=self.ref_count_var, bg="#f0f0f0", fg="#1565C0",
+                 font=("", 10, "bold")).pack(side=tk.LEFT, padx=12)
 
         mid = tk.Frame(self)
         mid.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
 
-        # 左侧：图像 + 点选
+        # 左侧：参考列表 + 画布
         left = tk.Frame(mid)
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
+        list_frame = tk.LabelFrame(left, text="参考盘列表（点击切换；主路径填 N，点选可选）", padx=4, pady=4)
+        list_frame.pack(fill=tk.X)
+        self.ref_listbox = tk.Listbox(list_frame, height=5, exportselection=False)
+        self.ref_listbox.pack(fill=tk.X, side=tk.LEFT, expand=True)
+        self.ref_listbox.bind("<<ListboxSelect>>", self._on_ref_select)
+        sb = tk.Scrollbar(list_frame, command=self.ref_listbox.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.ref_listbox.config(yscrollcommand=sb.set)
+
         tip = tk.Label(
             left,
-            text="点选：左键加点 · 右键删最近点 · Ctrl+Z 撤销 · 滚轮缩放提示见状态栏",
+            text="当前盘：左键加点（增强）· 右键删点 · Ctrl+Z 撤销 · 下方填写本盘真值 N 后点「保存 N」",
             fg="#666", anchor="w"
         )
         tip.pack(fill=tk.X)
@@ -124,36 +169,52 @@ class BatchWorkbench(tk.Toplevel):
                  fg="#c62828").pack(side=tk.LEFT)
         tk.Button(tool_bar, text="清空点", command=self.clear_points).pack(side=tk.LEFT, padx=6)
         tk.Button(tool_bar, text="撤销", command=lambda: self._on_undo(None)).pack(side=tk.LEFT)
-        tk.Button(tool_bar, text="导出点JSON", command=self.export_points).pack(side=tk.LEFT, padx=6)
+        tk.Button(tool_bar, text="导出当前点JSON", command=self.export_points).pack(side=tk.LEFT, padx=6)
         tk.Button(tool_bar, text="保存标注图", command=self.save_annotated).pack(side=tk.LEFT)
 
-        # 右侧：参数与结果
-        right = tk.Frame(mid, width=320)
+        # 右侧
+        right = tk.Frame(mid, width=340)
         right.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
         right.pack_propagate(False)
 
-        n_frame = tk.LabelFrame(right, text="真值总数 N", padx=8, pady=8)
+        n_frame = tk.LabelFrame(right, text="当前盘真值总数 N（图+N 主路径）", padx=8, pady=8)
         n_frame.pack(fill=tk.X, pady=4)
         self.n_entry = tk.Entry(n_frame, textvariable=self.total_n_var, font=("", 14), width=10)
         self.n_entry.pack(side=tk.LEFT)
-        self.n_hint = tk.Label(n_frame, text="策略3必填；策略1必填；策略2=点数", fg="#888", wraplength=280)
-        self.n_hint.pack(side=tk.LEFT, padx=6)
+        tk.Button(n_frame, text="保存 N 到当前盘", command=self.save_n_to_current,
+                  bg="#FF9800", fg="white", relief=tk.FLAT).pack(side=tk.LEFT, padx=8)
+
+        help_lbl = tk.Label(
+            right,
+            text=(
+                f"• 建议添加 2～{MAX_REF_PLATES} 块参考盘，每块填写人工计数 N\n"
+                "• 点选为增强：可选，有助于面积约束与位置一致性\n"
+                "• 联合标定：一套参数同时拟合所有参考盘\n"
+                "• 标定后再批量处理其余未标真值的平板"
+            ),
+            justify=tk.LEFT, fg="#555", wraplength=320
+        )
+        help_lbl.pack(fill=tk.X, pady=4)
 
         tk.Button(
-            right, text="▶ 开始学习 / 标定", command=self.start_calibrate,
+            right, text="▶ 联合学习 / 标定", command=self.start_calibrate,
             bg="#1976D2", fg="white", font=("", 11, "bold"), relief=tk.FLAT, pady=8
         ).pack(fill=tk.X, pady=8)
 
-        self.calib_info = tk.Text(right, height=10, wrap=tk.WORD, font=("Consolas", 9))
+        self.calib_info = tk.Text(right, height=12, wrap=tk.WORD, font=("Consolas", 9))
         self.calib_info.pack(fill=tk.X, pady=4)
-        self.calib_info.insert("1.0", "标定结果将显示在这里。\n")
+        self.calib_info.insert(
+            "1.0",
+            "标定结果将显示在这里。\n\n"
+            "流程：添加 2～5 块参考盘 → 每块填 N → 联合标定 → 批量计数。\n"
+        )
         self.calib_info.config(state=tk.DISABLED)
 
         batch_frame = tk.LabelFrame(right, text="批量计数（其余平板）", padx=8, pady=8)
         batch_frame.pack(fill=tk.BOTH, expand=True, pady=6)
         tk.Button(batch_frame, text="添加图片…", command=self.add_batch_images).pack(fill=tk.X)
         tk.Button(batch_frame, text="清空列表", command=self.clear_batch).pack(fill=tk.X, pady=4)
-        self.batch_list = tk.Listbox(batch_frame, height=8)
+        self.batch_list = tk.Listbox(batch_frame, height=6)
         self.batch_list.pack(fill=tk.BOTH, expand=True, pady=4)
         tk.Button(
             batch_frame, text="批量计数", command=self.start_batch,
@@ -163,29 +224,14 @@ class BatchWorkbench(tk.Toplevel):
         tk.Button(batch_frame, text="保存参数 JSON", command=self.save_params_json).pack(fill=tk.X)
         tk.Button(batch_frame, text="应用到主窗口参数", command=self.apply_to_main).pack(fill=tk.X, pady=4)
 
-        tk.Label(right, textvariable=self.result_summary_var, fg="#333", wraplength=300,
+        tk.Label(right, textvariable=self.result_summary_var, fg="#333", wraplength=320,
                  justify=tk.LEFT).pack(fill=tk.X, pady=4)
 
         status = tk.Label(self, textvariable=self.status_var, anchor="w", bg="#eeeeee", padx=8)
         status.pack(fill=tk.X, side=tk.BOTTOM)
 
-        self._on_strategy_change()
-
     def _on_close(self):
         self.destroy()
-
-    def _on_strategy_change(self):
-        s = self.strategy_var.get()
-        if s == STRATEGY_FULL_POINTS:
-            self.n_hint.config(text="全量点选：N 自动等于点数，无需填写")
-            self.n_entry.config(state=tk.DISABLED)
-        elif s == STRATEGY_PARTIAL_POINTS:
-            self.n_entry.config(state=tk.NORMAL)
-            self.n_hint.config(text="部分点选：至少点 5 个样本，并填写整盘真值 N")
-        else:
-            self.n_entry.config(state=tk.NORMAL)
-            self.n_hint.config(text="仅填总数：不点选也可标定（无位置约束）")
-        self._update_point_label()
 
     def _set_busy(self, busy: bool, msg: str = ""):
         self.is_busy = busy
@@ -198,113 +244,256 @@ class BatchWorkbench(tk.Toplevel):
         self.calib_info.insert("1.0", text)
         self.calib_info.config(state=tk.DISABLED)
 
-    # ── 参考图与点选 ──────────────────────────────
-    def load_reference(self):
-        path = filedialog.askopenfilename(
-            title="选择参考盘图片",
-            filetypes=[("图片", "*.jpg;*.jpeg;*.png;*.bmp;*.tif;*.tiff"), ("所有", "*.*")]
-        )
-        if not path:
-            return
-        img = cv2.imread(path)
-        if img is None:
-            messagebox.showerror("错误", "无法读取图片", parent=self)
-            return
-        self.ref_path = path
-        self.ref_image = img
-        self.points = []
-        self.undo_stack = []
-        self.calibrated_params = None
-        self.calib_meta = None
-        self.status_var.set(f"参考盘: {os.path.basename(path)}  ({img.shape[1]}x{img.shape[0]})")
+    def _current(self) -> Optional[RefPlate]:
+        if 0 <= self.current_idx < len(self.refs):
+            return self.refs[self.current_idx]
+        return None
+
+    def _refresh_ref_list(self, select: Optional[int] = None):
+        self.ref_listbox.delete(0, tk.END)
+        for r in self.refs:
+            self.ref_listbox.insert(tk.END, r.display_label())
+        self.ref_count_var.set(f"参考盘: {len(self.refs)} / 最多 {MAX_REF_PLATES}")
+        if select is not None and 0 <= select < len(self.refs):
+            self.ref_listbox.selection_clear(0, tk.END)
+            self.ref_listbox.selection_set(select)
+            self.ref_listbox.activate(select)
+            self.current_idx = select
+        self._sync_n_entry()
         self._update_point_label()
         self._redraw()
 
+    def _sync_n_entry(self):
+        cur = self._current()
+        if cur and cur.total_gt is not None:
+            self.total_n_var.set(str(cur.total_gt))
+        else:
+            self.total_n_var.set("")
+
+    def _on_ref_select(self, event=None):
+        sel = self.ref_listbox.curselection()
+        if not sel:
+            return
+        # 切换前可自动尝试保存 N 输入框（不打断）
+        self._try_autosave_n()
+        self.current_idx = int(sel[0])
+        self._sync_n_entry()
+        self._update_point_label()
+        self._redraw()
+        cur = self._current()
+        if cur:
+            self.status_var.set(f"当前参考盘: {cur.name}")
+
+    def _try_autosave_n(self):
+        cur = self._current()
+        if not cur:
+            return
+        text = self.total_n_var.get().strip()
+        if not text:
+            return
+        try:
+            cur.total_gt = int(text)
+            self._refresh_ref_list(select=self.current_idx)
+        except ValueError:
+            pass
+
+    # ── 参考盘管理 ────────────────────────────────
+    def add_references(self):
+        if self.is_busy:
+            return
+        remain = MAX_REF_PLATES - len(self.refs)
+        if remain <= 0:
+            messagebox.showwarning(
+                "已达上限",
+                f"参考盘最多 {MAX_REF_PLATES} 块。请先移除部分再添加。",
+                parent=self,
+            )
+            return
+        paths = filedialog.askopenfilenames(
+            title=f"选择参考盘图片（还可添加 {remain} 块）",
+            filetypes=[("图片", "*.jpg;*.jpeg;*.png;*.bmp;*.tif;*.tiff"), ("所有", "*.*")]
+        )
+        if not paths:
+            return
+
+        added = 0
+        for path in paths:
+            if len(self.refs) >= MAX_REF_PLATES:
+                messagebox.showinfo("提示", f"已达上限 {MAX_REF_PLATES} 块，后续文件已忽略。", parent=self)
+                break
+            if any(r.path == path for r in self.refs):
+                continue
+            img = cv2.imread(path)
+            if img is None:
+                messagebox.showwarning("跳过", f"无法读取: {path}", parent=self)
+                continue
+
+            # 弹窗询问 N（主路径）
+            n = simpledialog.askinteger(
+                "参考盘真值 N",
+                f"请输入「{os.path.basename(path)}」的人工菌落总数 N：\n"
+                "（可稍后在右侧修改；点选为可选项）",
+                parent=self,
+                minvalue=1,
+                maxvalue=100000,
+            )
+            self.refs.append(RefPlate(path, img, total_gt=n))
+            added += 1
+
+        if added:
+            self._refresh_ref_list(select=len(self.refs) - 1)
+            self.status_var.set(f"已添加 {added} 块参考盘，共 {len(self.refs)} 块")
+            if len(self.refs) == 1:
+                messagebox.showinfo(
+                    "提示",
+                    "已添加 1 块参考盘。\n建议再添加 1～4 块有真值的盘做联合标定，泛化通常更好。",
+                    parent=self,
+                )
+
+    def remove_current_ref(self):
+        if self.is_busy or not self.refs:
+            return
+        cur = self._current()
+        if cur is None:
+            messagebox.showinfo("提示", "请先选中要移除的参考盘", parent=self)
+            return
+        idx = self.current_idx
+        self.refs.pop(idx)
+        new_idx = min(idx, len(self.refs) - 1)
+        self.current_idx = new_idx
+        self._refresh_ref_list(select=new_idx if new_idx >= 0 else None)
+        self.status_var.set(f"已移除，剩余 {len(self.refs)} 块参考盘")
+
+    def clear_refs(self):
+        if self.is_busy:
+            return
+        if self.refs and not messagebox.askyesno("确认", "清空全部参考盘？", parent=self):
+            return
+        self.refs = []
+        self.current_idx = -1
+        self.calibrated_params = None
+        self.calib_meta = None
+        self._refresh_ref_list()
+        self.status_var.set("参考盘已清空")
+
+    def save_n_to_current(self):
+        cur = self._current()
+        if cur is None:
+            messagebox.showwarning("提示", "请先添加并选中参考盘", parent=self)
+            return
+        try:
+            n = int(self.total_n_var.get().strip())
+            if n < 1:
+                raise ValueError
+        except Exception:
+            messagebox.showerror("错误", "请输入有效的正整数 N", parent=self)
+            return
+        cur.total_gt = n
+        self._refresh_ref_list(select=self.current_idx)
+        self.status_var.set(f"{cur.name} 真值 N = {n}")
+
+    # ── 点选 ──────────────────────────────────────
     def _push_undo(self):
-        self.undo_stack.append([dict(p) for p in self.points])
-        if len(self.undo_stack) > 50:
-            self.undo_stack.pop(0)
+        cur = self._current()
+        if not cur:
+            return
+        cur.undo_stack.append([dict(p) for p in cur.points])
+        if len(cur.undo_stack) > 50:
+            cur.undo_stack.pop(0)
 
     def _on_undo(self, event=None):
-        if self.is_busy or not self.undo_stack:
+        if self.is_busy:
             return
-        self.points = self.undo_stack.pop()
+        cur = self._current()
+        if not cur or not cur.undo_stack:
+            return
+        cur.points = cur.undo_stack.pop()
         self._update_point_label()
+        self._refresh_ref_list(select=self.current_idx)
         self._redraw()
 
     def clear_points(self):
         if self.is_busy:
             return
+        cur = self._current()
+        if not cur:
+            return
         self._push_undo()
-        self.points = []
+        cur.points = []
         self._update_point_label()
+        self._refresh_ref_list(select=self.current_idx)
         self._redraw()
 
     def _update_point_label(self):
-        self.point_count_var.set(f"点选: {len(self.points)}")
-        if self.strategy_var.get() == STRATEGY_FULL_POINTS:
-            self.total_n_var.set(str(len(self.points)))
+        cur = self._current()
+        n = len(cur.points) if cur else 0
+        self.point_count_var.set(f"当前盘点选: {n}")
 
     def _canvas_to_image(self, cx: float, cy: float) -> Optional[Tuple[float, float]]:
-        if self.ref_image is None:
+        cur = self._current()
+        if cur is None:
             return None
         ox, oy = self._offset
         if self._disp_scale <= 0:
             return None
         ix = (cx - ox) / self._disp_scale
         iy = (cy - oy) / self._disp_scale
-        h, w = self.ref_image.shape[:2]
+        h, w = cur.image.shape[:2]
         if ix < 0 or iy < 0 or ix >= w or iy >= h:
             return None
         return ix, iy
 
     def _on_left_click(self, event):
-        if self.is_busy or self.ref_image is None:
+        if self.is_busy:
             return
-        s = self.strategy_var.get()
-        if s == STRATEGY_COUNT_ONLY:
-            self.status_var.set("当前为「图片+菌落数」策略，无需点选；可切换策略 1/2 进行点选")
+        cur = self._current()
+        if cur is None:
+            self.status_var.set("请先添加参考盘")
             return
         coords = self._canvas_to_image(event.x, event.y)
         if coords is None:
             return
         self._push_undo()
         ix, iy = coords
-        self.points.append(make_point(ix, iy, point_id=len(self.points) + 1))
-        self.points = renumber_points(self.points)
+        cur.points.append(make_point(ix, iy, point_id=len(cur.points) + 1))
+        cur.points = renumber_points(cur.points)
         self._update_point_label()
+        self._refresh_ref_list(select=self.current_idx)
         self._redraw()
 
     def _on_right_click(self, event):
-        if self.is_busy or self.ref_image is None or not self.points:
+        if self.is_busy:
+            return
+        cur = self._current()
+        if cur is None or not cur.points:
             return
         coords = self._canvas_to_image(event.x, event.y)
         if coords is None:
             return
         ix, iy = coords
-        # 容差随缩放
         tol = max(12.0, 18.0 / max(self._disp_scale, 0.01))
-        idx = find_nearest_point(self.points, ix, iy, max_dist=tol)
+        idx = find_nearest_point(cur.points, ix, iy, max_dist=tol)
         if idx is None:
             return
         self._push_undo()
-        self.points.pop(idx)
-        self.points = renumber_points(self.points)
+        cur.points.pop(idx)
+        cur.points = renumber_points(cur.points)
         self._update_point_label()
+        self._refresh_ref_list(select=self.current_idx)
         self._redraw()
 
     def _redraw(self):
         self.canvas.delete("all")
-        if self.ref_image is None:
+        cur = self._current()
+        if cur is None:
             return
-        img = self.ref_image
-        if self.points:
-            img = draw_points_on_image(img, self.points, radius=max(4, int(6)), with_index=True)
+        img = cur.image
+        if cur.points:
+            img = draw_points_on_image(img, cur.points, radius=6, with_index=True)
 
         cw = max(self.canvas.winfo_width(), 10)
         ch = max(self.canvas.winfo_height(), 10)
         h, w = img.shape[:2]
-        self._img_size = (w, h)
         scale = min(cw / w, ch / h)
         self._disp_scale = scale
         nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
@@ -317,9 +506,17 @@ class BatchWorkbench(tk.Toplevel):
         self._photo = ImageTk.PhotoImage(pil)
         self.canvas.create_image(ox, oy, image=self._photo, anchor=tk.NW)
 
+        # 叠加 N 文字
+        n_txt = f"N={cur.total_gt}" if cur.total_gt is not None else "N=未设置"
+        self.canvas.create_text(
+            12, 12, anchor=tk.NW, text=f"{cur.name}  {n_txt}",
+            fill="#fff", font=("Microsoft YaHei", 11, "bold")
+        )
+
     def export_points(self):
-        if not self.points:
-            messagebox.showinfo("提示", "当前没有点", parent=self)
+        cur = self._current()
+        if not cur or not cur.points:
+            messagebox.showinfo("提示", "当前盘没有点", parent=self)
             return
         path = filedialog.asksaveasfilename(
             title="导出点集", defaultextension=".json",
@@ -328,13 +525,14 @@ class BatchWorkbench(tk.Toplevel):
         if not path:
             return
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(self.points, f, ensure_ascii=False, indent=2)
+            json.dump(cur.points, f, ensure_ascii=False, indent=2)
         self.status_var.set(f"已导出点集: {path}")
 
     def save_annotated(self):
-        if self.ref_image is None:
+        cur = self._current()
+        if cur is None:
             return
-        img = draw_points_on_image(self.ref_image, self.points) if self.points else self.ref_image
+        img = draw_points_on_image(cur.image, cur.points) if cur.points else cur.image
         path = filedialog.asksaveasfilename(
             title="保存标注图", defaultextension=".png",
             filetypes=[("PNG", "*.png"), ("JPEG", "*.jpg")]
@@ -343,61 +541,61 @@ class BatchWorkbench(tk.Toplevel):
             cv2.imwrite(path, img)
             self.status_var.set(f"已保存: {path}")
 
-    # ── 标定 ──────────────────────────────────────
+    # ── 联合标定 ──────────────────────────────────
     def start_calibrate(self):
         if self.is_busy:
             return
-        if self.ref_image is None:
-            messagebox.showwarning("提示", "请先加载参考盘图片", parent=self)
+        self._try_autosave_n()
+
+        if not self.refs:
+            messagebox.showwarning("提示", "请先添加至少 1 块参考盘", parent=self)
             return
 
-        strategy = self.strategy_var.get()
-        total_gt = None
-        pts = None
+        missing = [r.name for r in self.refs if r.total_gt is None and not r.points]
+        if missing:
+            messagebox.showerror(
+                "缺少真值",
+                "以下参考盘未设置 N，且无点选：\n" + "\n".join(missing) +
+                "\n\n请选中后填写 N 并点「保存 N 到当前盘」。",
+                parent=self,
+            )
+            return
 
-        if strategy == STRATEGY_COUNT_ONLY:
-            try:
-                total_gt = int(self.total_n_var.get().strip())
-            except Exception:
-                messagebox.showerror("错误", "请输入有效的真值总数 N", parent=self)
-                return
-            if total_gt < 1:
-                messagebox.showerror("错误", "N 必须 ≥ 1", parent=self)
-                return
-        elif strategy == STRATEGY_PARTIAL_POINTS:
-            try:
-                total_gt = int(self.total_n_var.get().strip())
-            except Exception:
-                messagebox.showerror("错误", "部分点选必须填写整盘真值 N", parent=self)
-                return
-            if len(self.points) < 5:
-                messagebox.showerror("错误", f"部分点选至少需要 5 个点（当前 {len(self.points)}）", parent=self)
-                return
-            pts = self.points
-        else:  # full
-            if len(self.points) < 1:
-                messagebox.showerror("错误", "请先在图上点选菌落", parent=self)
-                return
-            pts = self.points
-            total_gt = len(self.points)
+        # 无 N 但有全量点选的盘允许
+        for r in self.refs:
+            if r.total_gt is None and r.points:
+                r.total_gt = len(r.points)
 
-        self._set_busy(True, "正在标定学习，请稍候…")
-        self._set_info("标定中…\n")
+        if any(r.total_gt is None or r.total_gt < 1 for r in self.refs):
+            messagebox.showerror("错误", "每块参考盘都需要有效的真值 N", parent=self)
+            return
+
+        n_refs = len(self.refs)
+        if n_refs == 1:
+            if not messagebox.askyesno(
+                "仅 1 块参考盘",
+                "当前只有 1 块参考盘。\n建议 2～5 块联合标定效果更好。\n是否仍用单盘继续？",
+                parent=self,
+            ):
+                return
+
+        refs_payload = [r.to_ref_dict() for r in self.refs]
+        self._set_busy(True, f"联合标定中（{n_refs} 盘）…")
+        self._set_info(f"联合标定中，共 {n_refs} 块参考盘…\n")
 
         def worker():
             try:
-                def prog(i, n, pred, gt):
+                def prog(i, n, nref, avg_fit):
                     self.after(0, lambda: self.status_var.set(
-                        f"标定中 {i}/{n}  当前最优预测≈{pred} / 真值{gt}"
+                        f"联合标定 {i}/{n}  盘数={nref}  当前平均误差≈{avg_fit:.1%}"
                     ))
 
-                result = calibrate(
-                    image=self.ref_image,
-                    strategy=strategy,
-                    total_gt=total_gt,
-                    points=pts,
-                    max_evals=40,
-                    time_limit_sec=28.0,
+                # 盘数多时放宽时间
+                tlim = 35.0 + 20.0 * n_refs
+                result = calibrate_multi(
+                    references=refs_payload,
+                    max_evals=36 if n_refs <= 2 else 28,
+                    time_limit_sec=tlim,
                     progress_callback=prog,
                 )
                 self.after(0, lambda: self._on_calib_done(result))
@@ -418,13 +616,12 @@ class BatchWorkbench(tk.Toplevel):
 
         self.calibrated_params = result["params"]
         self.calib_meta = result
+
         lines = [
             result.get("message", "完成"),
-            f"策略: {result.get('strategy')}",
-            f"真值 N: {result.get('ref_count_gt')}  预测: {result.get('predicted_count')}",
-            f"相对误差: {result.get('fit_error', 0):.2%}",
-            f"匹配分: {result.get('match_score')}",
+            "",
             f"评估次数: {result.get('evals')}  耗时: {result.get('elapsed_ms', 0):.0f} ms",
+            f"平均误差: {result.get('fit_error', 0):.2%}  最大误差: {result.get('max_fit_error', 0):.2%}",
             "",
             "参数 θ*:",
         ]
@@ -437,16 +634,10 @@ class BatchWorkbench(tk.Toplevel):
             for w in warns:
                 lines.append(f"  · {w}")
         self._set_info("\n".join(lines))
-        self.status_var.set("标定完成，可进行批量计数或应用到主窗口")
+        self.status_var.set("联合标定完成，可进行批量计数或应用到主窗口")
         self.result_summary_var.set(
-            f"参考盘: 预测 {result.get('predicted_count')} / 真值 {result.get('ref_count_gt')}"
+            f"{result.get('n_refs')} 盘联合 · 平均误差 {result.get('fit_error', 0):.1%}"
         )
-
-        # 显示标定预览到画布（叠加自动结果若有）
-        proc = (result.get("result") or {}).get("processed_image")
-        if proc is not None:
-            # 临时展示：不替换 ref_image，另开简单刷新用标注点图即可
-            pass
 
     # ── 批量 ──────────────────────────────────────
     def add_batch_images(self):
@@ -456,7 +647,11 @@ class BatchWorkbench(tk.Toplevel):
         )
         if not paths:
             return
+        ref_paths = {r.path for r in self.refs}
         for p in paths:
+            if p in ref_paths:
+                # 允许但提示
+                pass
             if p not in self.batch_paths:
                 self.batch_paths.append(p)
                 self.batch_list.insert(tk.END, os.path.basename(p))
@@ -472,7 +667,7 @@ class BatchWorkbench(tk.Toplevel):
         if self.is_busy:
             return
         if not self.calibrated_params:
-            messagebox.showwarning("提示", "请先完成标定学习", parent=self)
+            messagebox.showwarning("提示", "请先完成联合标定", parent=self)
             return
         if not self.batch_paths:
             messagebox.showwarning("提示", "请先添加批量图片", parent=self)
@@ -504,7 +699,6 @@ class BatchWorkbench(tk.Toplevel):
     def _on_batch_done(self, results: List[Dict[str, Any]]):
         self.is_busy = False
         self.batch_results = results
-        # 刷新列表显示计数
         self.batch_list.delete(0, tk.END)
         total = 0
         ok = 0
@@ -545,24 +739,32 @@ class BatchWorkbench(tk.Toplevel):
         )
         if not path:
             return
+        meta = self.calib_meta or {}
+        plate_summary = []
+        for p in meta.get("plate_results") or []:
+            plate_summary.append({
+                "name": p.get("name"),
+                "path": p.get("path"),
+                "total_gt": p.get("total_gt"),
+                "predicted_count": p.get("predicted_count"),
+                "fit_error": p.get("fit_error"),
+                "n_points": p.get("n_points"),
+                "strategy": p.get("strategy"),
+            })
         payload = {
             "batch_name": self.batch_name_var.get(),
             "params": self.calibrated_params,
-            "meta": {
-                "strategy": (self.calib_meta or {}).get("strategy"),
-                "ref_count_gt": (self.calib_meta or {}).get("ref_count_gt"),
-                "predicted_count": (self.calib_meta or {}).get("predicted_count"),
-                "fit_error": (self.calib_meta or {}).get("fit_error"),
-                "match_score": (self.calib_meta or {}).get("match_score"),
-                "ref_path": self.ref_path,
-            },
+            "n_refs": meta.get("n_refs"),
+            "fit_error": meta.get("fit_error"),
+            "max_fit_error": meta.get("max_fit_error"),
+            "plate_results": plate_summary,
+            "version": meta.get("version", "1.1"),
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         self.status_var.set(f"参数已保存: {path}")
 
     def apply_to_main(self):
-        """将标定参数写回主窗口控件（若存在）。"""
         if not self.calibrated_params:
             messagebox.showinfo("提示", "没有标定参数", parent=self)
             return
@@ -600,7 +802,6 @@ class BatchWorkbench(tk.Toplevel):
 
 
 def open_batch_workbench(master):
-    """打开工作台（避免重复多开可简单允许多实例）。"""
     win = BatchWorkbench(master)
     win.transient(master)
     win.focus_set()

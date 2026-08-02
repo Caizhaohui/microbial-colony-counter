@@ -247,159 +247,6 @@ def _build_search_space(
     return unique
 
 
-def calibrate(
-    image: np.ndarray,
-    strategy: str = STRATEGY_COUNT_ONLY,
-    total_gt: Optional[int] = None,
-    points: Optional[Sequence[Dict[str, Any]]] = None,
-    max_evals: int = 45,
-    time_limit_sec: float = 30.0,
-    base_params: Optional[Dict[str, Any]] = None,
-    progress_callback=None,
-) -> Dict[str, Any]:
-    """
-    对参考图执行参数标定。
-
-    返回:
-      {
-        success, strategy, params, ref_count_gt, predicted_count,
-        fit_error, match_score, evals, elapsed_ms,
-        result (process_image 最优结果), message
-      }
-    """
-    t0 = time.time()
-    strategy = (strategy or STRATEGY_COUNT_ONLY).strip()
-    points_list = renumber_points(points) if points else []
-
-    if strategy == STRATEGY_FULL_POINTS:
-        if len(points_list) < 1:
-            return {
-                "success": False,
-                "message": "全量点选策略需要至少一个点",
-                "strategy": strategy,
-            }
-        total_gt = len(points_list)
-    elif strategy == STRATEGY_PARTIAL_POINTS:
-        if total_gt is None or int(total_gt) < 1:
-            return {
-                "success": False,
-                "message": "部分点选策略必须提供整盘真值总数 N",
-                "strategy": strategy,
-            }
-        if len(points_list) < 5:
-            return {
-                "success": False,
-                "message": f"部分点选至少需要 5 个样本点（当前 {len(points_list)}）",
-                "strategy": strategy,
-            }
-        total_gt = int(total_gt)
-    elif strategy == STRATEGY_COUNT_ONLY:
-        if total_gt is None or int(total_gt) < 1:
-            return {
-                "success": False,
-                "message": "图片+菌落数策略必须提供真值总数 N",
-                "strategy": strategy,
-            }
-        total_gt = int(total_gt)
-    else:
-        return {
-            "success": False,
-            "message": f"未知策略: {strategy}",
-            "strategy": strategy,
-        }
-
-    use_match = strategy == STRATEGY_FULL_POINTS and len(points_list) > 0
-    # 部分点选也可用弱匹配（仅对已标注点）
-    weak_match = strategy == STRATEGY_PARTIAL_POINTS and len(points_list) > 0
-
-    space = _build_search_space(strategy, image, points_list, base_params)
-    # 限制评估次数
-    if len(space) > max_evals:
-        # 保留第一个（基线）+ 随机采样
-        rest = space[1:]
-        random.Random(7).shuffle(rest)
-        space = [space[0]] + rest[: max_evals - 1]
-
-    best = None
-    best_loss = 1e18
-    best_meta = {}
-    evals = 0
-
-    for idx, params in enumerate(space):
-        if time.time() - t0 > time_limit_sec:
-            break
-        result = _run(image, params)
-        evals += 1
-
-        scale = float(result.get("scale_ratio") or 1.0)
-        gt_scaled = scale_points(points_list, scale) if points_list else None
-
-        loss, fit_error, m_score = _score_candidate(
-            result, total_gt, gt_scaled,
-            use_match=use_match or weak_match,
-        )
-        # 部分点匹配权重更低（已在 match 内），再略减
-        if weak_match and not use_match and m_score is not None:
-            loss = _count_cost(int(result.get("count", 0)), total_gt) + (1.0 - m_score) * 0.2
-
-        if loss < best_loss:
-            best_loss = loss
-            best = params
-            best_meta = {
-                "result": result,
-                "fit_error": fit_error,
-                "match_score": m_score,
-                "predicted_count": int(result.get("count", 0)),
-            }
-
-        if progress_callback:
-            progress_callback(idx + 1, len(space), best_meta.get("predicted_count"), total_gt)
-
-        # 足够好则提前停
-        if fit_error <= 0.02 and (not use_match or (m_score is not None and m_score >= 0.85)):
-            break
-
-    elapsed_ms = (time.time() - t0) * 1000.0
-
-    if best is None:
-        return {
-            "success": False,
-            "message": "标定失败：无有效候选",
-            "strategy": strategy,
-            "evals": evals,
-            "elapsed_ms": elapsed_ms,
-        }
-
-    params_out = _normalize_params(best)
-    pred = best_meta["predicted_count"]
-    fit_error = best_meta["fit_error"]
-
-    # 置信提示
-    warnings = []
-    if fit_error > 0.15:
-        warnings.append("参考盘拟合误差较大，建议改用全量/部分点选或检查真值")
-    if use_match and best_meta.get("match_score") is not None and best_meta["match_score"] < 0.5:
-        warnings.append("点匹配分较低，自动圈出的位置可能与手点不一致")
-    if strategy == STRATEGY_COUNT_ONLY:
-        warnings.append("仅使用总数标定，无位置约束；同批次拍照条件请尽量一致")
-
-    return {
-        "success": True,
-        "strategy": strategy,
-        "params": params_out,
-        "ref_count_gt": total_gt,
-        "predicted_count": pred,
-        "fit_error": float(fit_error),
-        "match_score": best_meta.get("match_score"),
-        "evals": evals,
-        "elapsed_ms": elapsed_ms,
-        "result": best_meta["result"],
-        "warnings": warnings,
-        "message": f"标定完成：预测 {pred} / 真值 {total_gt}，相对误差 {fit_error:.1%}",
-        "version": "1.0",
-    }
-
-
 def params_to_process_kwargs(params: Dict[str, Any]) -> Dict[str, Any]:
     """提取可直接传给 process_image 的关键字参数。"""
     p = _normalize_params(params)
@@ -416,3 +263,334 @@ def params_to_process_kwargs(params: Dict[str, Any]) -> Dict[str, Any]:
         "use_watershed": p["use_watershed"],
         "min_circularity": p["min_circularity"],
     }
+
+
+# ── 多参考盘联合标定 ─────────────────────────────────
+
+MIN_REF_PLATES = 1
+MAX_REF_PLATES = 5
+
+
+def _normalize_ref_item(item: Dict[str, Any], index: int) -> Dict[str, Any]:
+    """
+    规范化单条参考盘记录。
+    必填: image (ndarray), total_gt (int, 或 points 可推导)
+    可选: name, points, strategy (默认 count_only；有足够点时可 partial/full)
+    """
+    if item is None or item.get("image") is None:
+        raise ValueError(f"参考盘#{index + 1} 缺少 image")
+
+    name = item.get("name") or f"ref_{index + 1}"
+    points_list = renumber_points(item["points"]) if item.get("points") else []
+    strategy = (item.get("strategy") or STRATEGY_COUNT_ONLY).strip()
+
+    total_gt = item.get("total_gt")
+    if strategy == STRATEGY_FULL_POINTS:
+        if len(points_list) < 1:
+            raise ValueError(f"{name}: 全量点选需要至少一个点")
+        total_gt = len(points_list)
+    elif strategy == STRATEGY_PARTIAL_POINTS:
+        if total_gt is None or int(total_gt) < 1:
+            raise ValueError(f"{name}: 部分点选必须提供总数 N")
+        if len(points_list) < 5:
+            raise ValueError(f"{name}: 部分点选至少 5 个样本点（当前 {len(points_list)}）")
+        total_gt = int(total_gt)
+    else:
+        strategy = STRATEGY_COUNT_ONLY
+        # 增强：仅有点数且未填 N 时，可用点数作为 N（等同全量但弱匹配可选）
+        if (total_gt is None or int(total_gt) < 1) and len(points_list) >= 1:
+            total_gt = len(points_list)
+            strategy = STRATEGY_FULL_POINTS
+        elif total_gt is None or int(total_gt) < 1:
+            raise ValueError(f"{name}: 必须提供真值总数 N（图+N 为主）")
+        else:
+            total_gt = int(total_gt)
+            # 有点则作为增强（弱匹配），策略记为 partial 若点数>=5 否则仍 count_only + 可选弱匹配
+            if len(points_list) >= 5:
+                strategy = STRATEGY_PARTIAL_POINTS
+
+    return {
+        "name": name,
+        "image": item["image"],
+        "total_gt": int(total_gt),
+        "points": points_list,
+        "strategy": strategy,
+        "path": item.get("path"),
+    }
+
+
+def _score_one_ref(
+    image: np.ndarray,
+    params: Dict[str, Any],
+    total_gt: int,
+    points_list: List[Dict[str, Any]],
+    strategy: str,
+) -> Dict[str, Any]:
+    result = _run(image, params)
+    if result.get("error"):
+        return {
+            "loss": 1e9,
+            "fit_error": 1.0,
+            "match_score": None,
+            "predicted_count": 0,
+            "result": result,
+        }
+
+    use_match = strategy == STRATEGY_FULL_POINTS and len(points_list) > 0
+    # 部分点选 / 图+N 附带点选 → 弱匹配增强
+    weak_match = (
+        strategy in (STRATEGY_PARTIAL_POINTS, STRATEGY_COUNT_ONLY)
+        and len(points_list) > 0
+    )
+    scale = float(result.get("scale_ratio") or 1.0)
+    gt_scaled = scale_points(points_list, scale) if points_list else None
+
+    loss, fit_error, m_score = _score_candidate(
+        result, total_gt, gt_scaled,
+        use_match=use_match or weak_match,
+    )
+    if weak_match and not use_match and m_score is not None:
+        # 点选增强权重低于全量匹配
+        w = 0.25 if strategy == STRATEGY_COUNT_ONLY else 0.2
+        loss = _count_cost(int(result.get("count", 0)), total_gt) + (1.0 - m_score) * w
+
+    return {
+        "loss": loss,
+        "fit_error": float(fit_error),
+        "match_score": m_score,
+        "predicted_count": int(result.get("count", 0)),
+        "result": result,
+    }
+
+
+def calibrate_multi(
+    references: Sequence[Dict[str, Any]],
+    max_evals: int = 40,
+    time_limit_sec: float = 60.0,
+    base_params: Optional[Dict[str, Any]] = None,
+    progress_callback=None,
+) -> Dict[str, Any]:
+    """
+    多参考盘联合标定（建议 2～5 盘，最多 MAX_REF_PLATES）。
+
+    每条 reference:
+      - image: np.ndarray (必填)
+      - total_gt: int (图+N 主路径必填；全量点选可省略)
+      - points: 可选，点选增强
+      - name / path: 可选
+      - strategy: 可选 count_only | partial_points | full_points
+        默认 count_only；若提供 ≥5 点且有 N → 自动按 partial 增强
+
+    目标: 最小化各盘 loss 的平均值（等权）。
+
+    返回:
+      success, params, fit_error (平均相对误差), plate_results[],
+      evals, elapsed_ms, warnings, message, n_refs, version
+    """
+    t0 = time.time()
+
+    if not references:
+        return {"success": False, "message": "请至少提供 1 块参考盘"}
+
+    if len(references) > MAX_REF_PLATES:
+        return {
+            "success": False,
+            "message": f"参考盘最多支持 {MAX_REF_PLATES} 块（当前 {len(references)}）",
+        }
+
+    try:
+        refs = [_normalize_ref_item(item, i) for i, item in enumerate(references)]
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
+
+    n_refs = len(refs)
+
+    # 搜索空间：合并各盘点集先验（用第一张图尺寸 + 所有点）
+    all_points: List[Dict[str, Any]] = []
+    for r in refs:
+        all_points.extend(r["points"])
+    # 策略：有任一点增强则用 partial 空间，否则 count_only
+    space_strategy = STRATEGY_PARTIAL_POINTS if len(all_points) >= 2 else STRATEGY_COUNT_ONLY
+    space = _build_search_space(space_strategy, refs[0]["image"], all_points or None, base_params)
+
+    # 多盘每轮更贵，适当限制评估次数
+    effective_max = max(12, max_evals // max(1, n_refs // 2 + 1)) if n_refs >= 3 else max_evals
+    effective_max = min(effective_max, max_evals)
+    if len(space) > effective_max:
+        rest = space[1:]
+        random.Random(7).shuffle(rest)
+        space = [space[0]] + rest[: effective_max - 1]
+
+    # 时间预算随盘数略增
+    time_budget = max(time_limit_sec, 25.0 * n_refs)
+
+    best_params = None
+    best_loss = 1e18
+    best_plate_meta: List[Dict[str, Any]] = []
+    evals = 0
+
+    for idx, params in enumerate(space):
+        if time.time() - t0 > time_budget:
+            break
+
+        plate_metas = []
+        losses = []
+        for r in refs:
+            meta = _score_one_ref(
+                r["image"], params, r["total_gt"], r["points"], r["strategy"]
+            )
+            plate_metas.append({
+                "name": r["name"],
+                "path": r.get("path"),
+                "total_gt": r["total_gt"],
+                "strategy": r["strategy"],
+                "n_points": len(r["points"]),
+                "predicted_count": meta["predicted_count"],
+                "fit_error": meta["fit_error"],
+                "match_score": meta["match_score"],
+                "loss": meta["loss"],
+                # 多盘时不保留完整大图，减内存；仅最优时再跑一遍可取图
+            })
+            losses.append(meta["loss"])
+
+        mean_loss = float(np.mean(losses)) if losses else 1e9
+        evals += 1
+
+        if mean_loss < best_loss:
+            best_loss = mean_loss
+            best_params = params
+            best_plate_meta = plate_metas
+
+        if progress_callback:
+            avg_fit = float(np.mean([m["fit_error"] for m in plate_metas])) if plate_metas else 1.0
+            progress_callback(idx + 1, len(space), n_refs, avg_fit)
+
+        # 各盘都足够好则提前停
+        if plate_metas and all(m["fit_error"] <= 0.03 for m in plate_metas):
+            break
+
+    elapsed_ms = (time.time() - t0) * 1000.0
+
+    if best_params is None:
+        return {
+            "success": False,
+            "message": "联合标定失败：无有效候选",
+            "evals": evals,
+            "elapsed_ms": elapsed_ms,
+            "n_refs": n_refs,
+        }
+
+    params_out = _normalize_params(best_params)
+
+    # 用最优参数再跑一遍，带上预览结果（processed_image）
+    plate_results = []
+    for r in refs:
+        meta = _score_one_ref(
+            r["image"], params_out, r["total_gt"], r["points"], r["strategy"]
+        )
+        plate_results.append({
+            "name": r["name"],
+            "path": r.get("path"),
+            "total_gt": r["total_gt"],
+            "strategy": r["strategy"],
+            "n_points": len(r["points"]),
+            "predicted_count": meta["predicted_count"],
+            "fit_error": meta["fit_error"],
+            "match_score": meta["match_score"],
+            "result": meta["result"],
+        })
+
+    fit_errors = [p["fit_error"] for p in plate_results]
+    mean_fit = float(np.mean(fit_errors))
+    max_fit = float(np.max(fit_errors))
+
+    warnings = []
+    if mean_fit > 0.15:
+        warnings.append("平均拟合误差较大，建议增加参考盘、检查真值 N，或对难盘补充点选")
+    if max_fit > 0.25:
+        worst = max(plate_results, key=lambda x: x["fit_error"])
+        warnings.append(
+            f"参考盘「{worst['name']}」误差偏大 ({worst['fit_error']:.1%})，可单独检查该盘拍照或真值"
+        )
+    if n_refs == 1:
+        warnings.append("当前仅 1 块参考盘；建议 2～5 块联合标定以提高泛化")
+    if all(p["n_points"] == 0 for p in plate_results):
+        warnings.append("均未使用点选增强（纯图+N）；同批次拍照条件请尽量一致")
+
+    lines = [f"联合标定完成：{n_refs} 块参考盘，平均相对误差 {mean_fit:.1%}（最大 {max_fit:.1%}）"]
+    for p in plate_results:
+        lines.append(
+            f"  · {p['name']}: 预测 {p['predicted_count']} / 真值 {p['total_gt']} "
+            f"(误差 {p['fit_error']:.1%}, 点 {p['n_points']})"
+        )
+
+    return {
+        "success": True,
+        "strategy": "multi_ref",
+        "params": params_out,
+        "n_refs": n_refs,
+        "fit_error": mean_fit,
+        "max_fit_error": max_fit,
+        "plate_results": plate_results,
+        "ref_count_gt": [p["total_gt"] for p in plate_results],
+        "predicted_count": [p["predicted_count"] for p in plate_results],
+        "evals": evals,
+        "elapsed_ms": elapsed_ms,
+        "warnings": warnings,
+        "message": "\n".join(lines),
+        "version": "1.1",
+        # 兼容单盘字段（取第一盘）
+        "result": plate_results[0].get("result") if plate_results else None,
+        "match_score": plate_results[0].get("match_score") if plate_results else None,
+    }
+
+
+def calibrate(
+    image: np.ndarray,
+    strategy: str = STRATEGY_COUNT_ONLY,
+    total_gt: Optional[int] = None,
+    points: Optional[Sequence[Dict[str, Any]]] = None,
+    max_evals: int = 45,
+    time_limit_sec: float = 30.0,
+    base_params: Optional[Dict[str, Any]] = None,
+    progress_callback=None,
+) -> Dict[str, Any]:
+    """
+    单参考盘标定（兼容旧接口）。内部委托 calibrate_multi。
+    """
+    def _prog(i, n, n_refs, avg_fit):
+        if progress_callback:
+            # 旧回调签名: (i, n, pred, gt) — 多盘时 pred/gt 用占位
+            progress_callback(i, n, None, total_gt)
+
+    result = calibrate_multi(
+        references=[{
+            "image": image,
+            "total_gt": total_gt,
+            "points": points,
+            "strategy": strategy,
+            "name": "ref",
+        }],
+        max_evals=max_evals,
+        time_limit_sec=time_limit_sec,
+        base_params=base_params,
+        progress_callback=_prog if progress_callback else None,
+    )
+
+    if not result.get("success"):
+        return result
+
+    # 展开为单盘风格字段
+    pr = (result.get("plate_results") or [{}])[0]
+    result["strategy"] = pr.get("strategy", strategy)
+    result["ref_count_gt"] = pr.get("total_gt", total_gt)
+    result["predicted_count"] = pr.get("predicted_count")
+    result["fit_error"] = pr.get("fit_error", result.get("fit_error"))
+    result["match_score"] = pr.get("match_score")
+    result["result"] = pr.get("result")
+    result["message"] = (
+        f"标定完成：预测 {result['predicted_count']} / 真值 {result['ref_count_gt']}，"
+        f"相对误差 {result.get('fit_error', 0):.1%}"
+    )
+    return result
+
