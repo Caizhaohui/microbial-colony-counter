@@ -102,6 +102,13 @@ class ColonyCounter:
         )
         self.save_button.pack(side=tk.LEFT, padx=5)
 
+        self.batch_button = tk.Button(
+            btn_frame, text="📦 批次标定", command=self.open_batch_workbench,
+            font=("Microsoft YaHei", 10),
+            bg='#FF9800', fg='white', relief=tk.FLAT, cursor='hand2', padx=12, pady=4
+        )
+        self.batch_button.pack(side=tk.LEFT, padx=5)
+
         # 分隔线
         ttk.Separator(toolbar_inner, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=15, pady=2)
 
@@ -257,6 +264,27 @@ class ColonyCounter:
 
         # 绑定窗口大小改变事件
         self.root.bind('<Configure>', self.on_window_resize)
+
+    def open_batch_workbench(self):
+        """打开电脑端批次标定工作台（不修改现有自动计数流程）"""
+        try:
+            from batch_workbench import open_batch_workbench
+            # 将参数变量挂到 root，便于工作台「应用到主窗口」
+            self.root.blur_ksize = self.blur_ksize
+            self.root.thresh_method = self.thresh_method
+            self.root.thresh_val = self.thresh_val
+            self.root.adaptive_block_size = self.adaptive_block_size
+            self.root.adaptive_c = self.adaptive_c
+            self.root.min_area = self.min_area
+            self.root.max_area = self.max_area
+            self.root.min_distance_from_edge = self.min_distance_from_edge
+            self.root.detect_petri_dish = self.detect_petri_dish
+            self.root.use_watershed = self.use_watershed
+            self.root.min_circularity = self.min_circularity
+            self.root.on_thresh_method_change = self.on_thresh_method_change
+            open_batch_workbench(self.root)
+        except Exception as e:
+            messagebox.showerror("错误", f"无法打开批次标定工作台:\n{e}")
 
     def on_thresh_method_change(self, event=None):
         """阈值方法改变时更新显示"""

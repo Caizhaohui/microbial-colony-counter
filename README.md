@@ -3,122 +3,121 @@
 [![Python](https://img.shields.io/badge/Python-3.7+-blue.svg)](https://www.python.org/)
 [![OpenCV](https://img.shields.io/badge/OpenCV-4.x-green.svg)](https://opencv.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Release](https://img.shields.io/badge/Release-v1.1.1-orange.svg)](https://github.com/Caizhaohui/microbial-colony-counter/releases)
 
-一个功能强大的微生物培养皿菌落自动计数工具，具有直观的图形界面和精确的图像处理算法。
+一个功能强大的微生物培养皿菌落自动计数工具，支持桌面 GUI、Web 局域网访问，以及 **批次标定学习**（参考盘真值 → 批量计数）。
+
+**仓库**: [https://github.com/Caizhaohui/microbial-colony-counter](https://github.com/Caizhaohui/microbial-colony-counter)
 
 ## ✨ 功能特点
 
-- 🖼️ **多格式支持**：支持JPG、PNG、BMP、TIFF等多种图片格式
-- 🔍 **智能计数**：基于OpenCV的先进图像处理算法自动检测和计数菌落
-- ⚙️ **参数调节**：提供丰富的参数调整选项，适应不同类型的培养皿
-- 🎯 **区域选择**：支持手动选择统计区域（矩形/圆形），可拖拽调整
-- 🧫 **培养皿检测**：自动检测培养皿圆形区域，排除背景干扰
-- 💧 **分水岭算法**：可选启用分水岭算法自动分离粘连菌落
-- 🔵 **圆度过滤**：通过圆度参数过滤非圆形杂质，提高计数准确性
-- 📊 **实时显示**：处理过程中实时显示二值化和计数结果
-- 📝 **菌落详情**：可查看每个菌落的编号、坐标、面积、圆度等详细信息
-- 💾 **结果保存**：可保存包含原始图片、二值化图片和计数结果的统计报告
-- 🎨 **美观界面**：精心设计的用户界面，操作直观简单
-- 📱 **Web App 支持**：支持通过手机浏览器远程访问，方便在实验室移动使用
-- ⚡ **性能优化**：缩略图传输 + JPEG压缩 + 异步线程池，低配电脑也能流畅运行
+- 🖼️ **多格式支持**：JPG、PNG、BMP、TIFF 等
+- 🔍 **智能计数**：基于 OpenCV 的图像处理自动检测与计数
+- ⚙️ **参数调节**：模糊、阈值、面积、边缘距离等，适应不同培养皿
+- 🎯 **区域选择**：手动矩形/圆形 ROI，可拖拽调整
+- 🧫 **培养皿检测**：自动检测圆形培养皿区域
+- 💧 **分水岭算法**：可选分离粘连菌落
+- 🔵 **圆度过滤**：过滤非圆形杂质
+- 📊 **实时显示**：二值化与标注结果实时预览
+- 📝 **菌落详情**：编号、坐标、面积、圆度
+- 💾 **结果保存**：统计报告图片
+- 📱 **Web App**：手机浏览器局域网访问
+- ⚡ **性能优化**：缩略图传输 + JPEG 压缩 + 异步线程池
+- 📦 **批次标定（v1.1.1）**：参考盘学习本批次参数，批量处理其余平板
 
 ## 🚀 快速开始
 
-### 方法一：运行桌面版（需要Python环境）
-
-1. **安装依赖**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. **运行桌面版程序**
-   ```bash
-   python main.py
-   ```
-
-### 方法二：运行 Web 版（推荐）
-
-1. **安装依赖并启动**
-   ```bash
-   pip install -r requirements.txt
-   python web_launcher.py
-   ```
-   或者 Windows 下双击 `run_gui.bat`
-
-2. **操作说明**
-   - 点击界面上的 "启动服务" 按钮
-   - 看到 "本机访问" 和 "手机访问" 地址
-   - 手机和电脑在同一局域网时，手机扫描或输入地址即可使用
-
-### 方法三：使用打包的可执行文件
-
-1. **打包程序**
-   ```bash
-   python build.py
-   ```
-
-2. **运行可执行文件**
-   - Windows: 双击 `dist/微生物菌落计数器.exe`
-
-### 方法四：优化打包（减小文件大小）
-
-使用虚拟环境 + Nuitka + UPX 的优化方案：
+### 方法一：桌面版
 
 ```bash
+pip install -r requirements.txt
+python main.py
+```
+
+工具栏 **「📦 批次标定」** 可打开批次学习工作台（见下文）。
+
+### 方法二：Web 版
+
+```bash
+pip install -r requirements.txt
+python web_launcher.py
+```
+
+Windows 也可双击 `run_gui.bat` / `start_web_app.bat`。
+
+1. 点击「启动服务」
+2. 使用本机或手机访问显示的地址（同一局域网）
+
+### 方法三：打包可执行文件
+
+```bash
+python build.py
+# 或优化打包
 python optimize_build.py
 ```
 
-## 📖 使用指南
+输出位于 `dist/`。
 
-### 基本操作流程
+## 📦 批次标定（电脑端）
 
-1. **选择图片**：点击"选择图片"按钮，选择培养皿图片文件
-2. **调整参数**：根据图片特点调整各项参数
-3. **选择区域**（可选）：点击"选择区域"手动指定统计范围
-4. **处理图片**：点击"处理图片"开始分析
-5. **查看结果**：查看计数结果和统计信息
-6. **保存结果**（可选）：点击"保存结果"保存统计报告
+同一次实验要数 **多块平板** 时，先用一块参考盘提供真值，软件搜索本批次最优参数，再批量计数其余平板。
+
+### 三种策略
+
+| 策略 | 操作 | 适用场景 |
+|------|------|----------|
+| **1. 部分点选 + 总数** | 左键点 ≥5 个典型菌落，并填写整盘人工总数 N | 推荐：有位置信息，又不必点完全部 |
+| **2. 全量点选** | 在图上点完所有菌落（N = 点数） | 真值最可靠，适合参考盘精标 |
+| **3. 图片 + 菌落数** | 不点选，只填写人工总数 N | 最快；无位置约束，拍照条件需尽量一致 |
+
+### 操作步骤
+
+1. 运行 `python main.py`，点击 **「📦 批次标定」**
+2. **加载参考盘** 图片，选择策略并完成真值采集
+3. 点击 **「开始学习 / 标定」**，查看拟合误差与参数 θ*
+4. **添加其余平板** → **批量计数** → 导出 CSV / 保存参数 JSON
+5. 可选：**应用到主窗口参数**，继续用原有单图自动计数
+
+**点选操作**：左键加点 · 右键删除最近点 · Ctrl+Z 撤销 · 可导出点 JSON / 标注图
+
+> 标定按 **批次** 有效；更换菌种、培养基或拍照条件后请重新标定。  
+> 详细设计见 [`开发计划-批次标定.md`](开发计划-批次标定.md)。
+
+### 相关模块
+
+- `backend/core/calibrator.py` — 三策略参数搜索
+- `backend/core/batch.py` — 批量应用参数
+- `backend/core/pointset.py` — 点集与标注绘制
+- `batch_workbench.py` — 桌面工作台 UI
+
+### 命令行冒烟测试
+
+```bash
+python backend/test_calibrator.py
+```
+
+## 📖 使用指南（单图自动计数）
+
+1. **选择图片** → 按需调整参数  
+2. **选择区域**（可选）→ **处理图片**  
+3. 查看结果 → **保存结果**（可选）
 
 ### 参数说明
 
-#### 1. 图像预处理
-- **高斯模糊核大小**：去噪参数，建议3-15之间的奇数
-- **二值化方法**：
-  - 手动阈值：手动设置阈值
-  - 自适应阈值：自动适应图片亮度变化
-
-#### 2. 培养皿检测
-- **自动检测培养皿圆形区域**：启用后只统计培养皿内的菌落
-
-#### 3. 菌落过滤
-- **最小面积**：过滤掉过小的噪点
-- **最大面积**：过滤掉过大的非菌落物体
-- **边缘距离**：避免统计边缘附近的菌落
-
-#### 4. 高级选项
-- **分水岭算法**：可选启用，自动分离粘连菌落（注意：可能导致过分割）
-- **圆度过滤**：设置最小圆度阈值(0~0.9)，过滤非圆形杂质
-
-### 手动选择区域
-
-1. 点击"选择区域"按钮
-2. 选择形状（圆形/矩形）
-3. 在图片上拖拽选择区域
-4. 确认选择后开始处理
+| 类别 | 参数 | 说明 |
+|------|------|------|
+| 预处理 | 高斯模糊核 | 去噪，建议 3–15 奇数 |
+| 二值化 | 手动 / 自适应 | 自适应更适合光照不均 |
+| 培养皿 | 自动检测圆 | 只统计皿内菌落 |
+| 过滤 | 最小/最大面积、边缘距离 | 去噪点与边缘伪影 |
+| 高级 | 分水岭、最小圆度 | 粘连分离与形状过滤 |
 
 ## 🛠️ 开发环境
 
-### 系统要求
+- **Python** 3.7+
+- **系统**：Windows 7+ / macOS 10.12+ / Linux
 
-- **Python**: 3.7+
-- **操作系统**:
-  - Windows 7/8/10/11
-  - macOS 10.12+
-  - Linux (Ubuntu 16.04+)
-
-### 依赖包
-
-```
+```text
 opencv-python>=4.5.0
 numpy>=1.19.0
 Pillow>=8.0.0
@@ -127,57 +126,69 @@ uvicorn>=0.15.0
 psutil>=5.8.0
 ```
 
-### 安装开发环境
-
 ```bash
-# 克隆项目
 git clone https://github.com/Caizhaohui/microbial-colony-counter.git
 cd microbial-colony-counter
-
-# 安装依赖
 pip install -r requirements.txt
 ```
 
+Web 后端额外依赖见 `backend/requirements.txt`。
+
 ## 🏗️ 项目结构
 
-```
+```text
 microbial-colony-counter/
-├── backend/            # Web App 后端代码 (FastAPI)
-│   ├── core/           # 核心图像处理算法 (OpenCV)
-│   ├── static/         # Web 前端 (HTML/CSS/JS)
-│   ├── main.py         # FastAPI 应用入口
-│   └── schemas.py      # API 数据模型 (Pydantic)
-├── main.py             # 桌面版主程序 (Tkinter GUI)
-├── web_launcher.py     # Web App GUI 启动器
-├── run_gui.bat         # 一键启动脚本
-├── build.py            # 打包脚本
-├── requirements.txt    # 依赖列表
-└── README.md           # 项目说明
+├── backend/
+│   ├── core/
+│   │   ├── algorithm.py      # 核心计数算法
+│   │   ├── calibrator.py     # 批次参数标定
+│   │   ├── batch.py          # 批量计数
+│   │   └── pointset.py       # 点集工具
+│   ├── static/index.html     # Web 前端
+│   ├── main.py               # FastAPI 入口
+│   ├── schemas.py
+│   └── test_*.py
+├── main.py                   # 桌面版主程序
+├── batch_workbench.py        # 批次标定工作台
+├── web_launcher.py           # Web 启动器
+├── build.py / optimize_build.py
+├── 开发计划-批次标定.md
+├── requirements.txt
+└── README.md
 ```
 
-## 🤝 贡献指南
+## 🤝 贡献
 
-欢迎提交Issue和Pull Request！
+欢迎提交 Issue 和 Pull Request。
 
 ## 📋 更新日志
 
+### v1.1.1 (2026-08-02)
+
+- ✨ **电脑端批次标定工作台**：部分点选 / 全量点选 / 仅填总数
+- ✨ 批量计数、CSV 导出、参数 JSON 存档
+- ✨ 标定参数一键应用到主窗口
+- 🧩 新增 `calibrator` / `batch` / `pointset` 核心模块
+- 📄 新增开发计划文档，完善 README
+
 ### v1.0.0 (2026-06-03)
-- ✨ 首个正式版本发布
-- 🎯 Web 版与桌面版算法完全对齐
-- 💧 新增分水岭算法分离粘连菌落
-- 🔵 新增圆度过滤功能
-- 📝 新增菌落详情表格展示
-- ⚡ 性能优化：缩略图传输、JPEG压缩、异步线程池
-- 🎨 Web 前端新增高级选项面板
+
+- ✨ 首个正式版本
+- 🎯 Web 与桌面算法对齐
+- 💧 分水岭分离粘连菌落
+- 🔵 圆度过滤、菌落详情
+- ⚡ 缩略图传输、JPEG 压缩、异步线程池
+- 🎨 Web 高级选项面板
 
 ## 📄 许可证
 
-本项目采用MIT许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
+[MIT License](LICENSE)
 
 ## 📞 联系方式
 
-- 项目维护者: [Zhaohui Cai]
-- 邮箱: [cai_zhaohui@163.com]
+- 维护者：Zhaohui Cai
+- 邮箱：cai_zhaohui@163.com
 
 ---
+
 **享受使用微生物菌落计数器！** 🧫🔬
