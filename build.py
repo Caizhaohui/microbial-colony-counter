@@ -31,12 +31,16 @@ def build_with_pyinstaller():
         "--hidden-import", "PIL",               # 确保包含PIL
         "--hidden-import", "PIL.Image",         # 确保包含PIL.Image
         "--hidden-import", "PIL.ImageTk",       # 确保包含PIL.ImageTk
-        "--hidden-import", "backend",              # 确保包含backend模块
-        "--hidden-import", "backend.core",         # 确保包含backend.core
-        "--hidden-import", "backend.core.algorithm", # 确保包含核心算法
-        "--add-data", "backend;backend",            # 包含backend目录
-        "--add-data", "test1.jpg;.",            # 添加测试图片（Windows使用分号）
-        "--add-data", "test2.jpg;.",
+        "--hidden-import", "backend",
+        "--hidden-import", "backend.core",
+        "--hidden-import", "backend.core.algorithm",
+        "--hidden-import", "backend.core.calibrator",
+        "--hidden-import", "backend.core.batch",
+        "--hidden-import", "backend.core.pointset",
+        "--hidden-import", "batch_workbench",
+        "--collect-all", "cv2",
+        "--add-data", "backend;backend",
+        "--add-data", "batch_workbench.py;.",
         "main.py"
     ]
     
